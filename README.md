@@ -1,36 +1,101 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# App Tracking Tài Xế Ra Vào Cổng
 
-## Getting Started
+Web app theo dõi tài xế xuất hàng: tài xế quét QR cổng bằng camera, quét nhiều đơn hàng (đơn ghép), bắt đầu / kết thúc xuất hàng; kèm dashboard trực quan theo cổng và xe.
 
-First, run the development server:
+## Tính năng
+
+- **Trang tài xế (`/`)** – tối ưu cho điện thoại (mobile-first), 5 bước:
+  1. Nhập tên tài xế + biển số xe.
+  2. Quét QR **cổng xuất hàng** bằng camera → tạo phiên.
+  3. Quét nhiều **đơn hàng xuất** (đơn ghép), chặn quét trùng, có nút xóa đơn quét sai.
+  4. Bấm **Bắt đầu xuất hàng** → hệ thống ước tính hoàn thành sau 30 phút và đếm ngược.
+  5. Bấm **Xuất xong** → ghi lại thời điểm hoàn thành thực tế.
+- **Dashboard quản lý (`/dashboard`)** – lưới các cổng và xe, đồng hồ đếm ngược 30 phút (đỏ khi quá giờ), thống kê nhanh, lịch sử phiên hoàn thành trong ngày. Tự làm mới mỗi 3 giây (polling).
+
+## Công nghệ
+
+- Next.js 16 (App Router) + TypeScript + Tailwind CSS
+- SQLite qua `better-sqlite3` (file `data/tracking.db`, tự tạo khi chạy)
+- Quét QR/mã vạch bằng camera trình duyệt qua `@yudiel/react-qr-scanner`
+
+## Chạy dự án
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Mở http://localhost:3000 (trang tài xế) và http://localhost:3000/dashboard (bảng theo dõi).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Build production:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run build
+npm run start
+```
 
-## Learn More
+## Quan trọng: camera cần HTTPS
 
-To learn more about Next.js, take a look at the following resources:
+Trình duyệt chỉ cho phép truy cập camera ở `localhost` hoặc qua **HTTPS**. Khi test trên điện thoại thật (không phải localhost), hãy chạy sau một domain/HTTPS, ví dụ dùng tunnel:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npx localtunnel --port 3000
+# hoặc
+ngrok http 3000
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Rồi mở link `https://...` mà công cụ trả về trên điện thoại và cấp quyền camera.
 
-## Deploy on Vercel
+## Định dạng QR
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+App dùng QR chứa **text đơn giản**, nội dung QR chính là giá trị được lưu:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **QR cổng**: text dạng `GATE-01`, `GATE-02`, ... (dùng làm mã cổng hiển thị trên dashboard).
+- **QR đơn hàng**: text là mã đơn, ví dụ `DH-2026-0001`.
+
+### Cách tạo QR để test nhanh
+
+- Online: vào bất kỳ trang "QR code generator" nào, nhập text `GATE-01` rồi tạo ảnh QR để in/dán tại cổng; tương tự tạo QR cho từng mã đơn.
+- Hoặc dùng thư viện dòng lệnh:
+
+```bash
+npx qrcode "GATE-01" -o gate-01.png
+npx qrcode "DH-2026-0001" -o don-1.png
+```
+
+Ngoài QR, scanner cũng đọc được các mã vạch phổ biến (Code 128, Code 39, EAN-13, EAN-8, Data Matrix, PDF417).
+
+## API
+
+| Method | Endpoint | Mô tả |
+| --- | --- | --- |
+| `GET` | `/api/sessions` | Danh sách phiên (cho dashboard) |
+| `POST` | `/api/sessions` | Tạo phiên (`driverName`, `vehiclePlate`, `gateCode`) |
+| `GET` | `/api/sessions/:id` | Chi tiết 1 phiên |
+| `POST` | `/api/sessions/:id/orders` | Thêm đơn (`orderCode`), chặn trùng (409) |
+| `DELETE` | `/api/sessions/:id/orders/:orderId` | Xóa đơn quét sai |
+| `POST` | `/api/sessions/:id/start-export` | Bắt đầu xuất (ước tính +30 phút) |
+| `POST` | `/api/sessions/:id/finish` | Ghi nhận xuất xong |
+
+## Cấu trúc thư mục
+
+```
+app/
+  page.tsx                 # Trang tài xế (5 bước)
+  dashboard/page.tsx       # Dashboard quản lý
+  api/sessions/...         # Route handlers
+components/
+  QrScanner.tsx            # Camera scanner (dynamic, ssr:false)
+  GateCard.tsx             # Thẻ hiển thị cổng/xe trên dashboard
+lib/
+  db.ts                    # Khởi tạo SQLite + schema
+  sessions.ts              # Truy vấn nghiệp vụ
+  types.ts                 # Kiểu dữ liệu dùng chung
+  format.ts                # Tiện ích định dạng thời gian
+data/tracking.db           # SQLite (tự tạo, đã .gitignore)
+```
+
+## Ghi chú
+
+- File SQLite nằm trong `data/` và đã được loại khỏi git. Xóa thư mục `data/` để reset toàn bộ dữ liệu.
+- Thời gian ước tính xuất hàng (30 phút) cấu hình tại `EXPORT_ESTIMATE_MINUTES` trong [lib/types.ts](lib/types.ts).
