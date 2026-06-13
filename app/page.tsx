@@ -3,7 +3,8 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SessionWithOrders } from "@/lib/types";
+import { todayDateString } from "@/lib/plan-parse";
+import type { DriverTruckOption, SessionWithOrders } from "@/lib/types";
 import { formatCountdown, formatTime } from "@/lib/format";
 
 const QrScanner = dynamic(() => import("@/components/QrScanner"), {
@@ -15,16 +16,21 @@ const QrScanner = dynamic(() => import("@/components/QrScanner"), {
   ),
 });
 
-type Step = "info" | "gate" | "orders" | "exporting" | "done";
+type Step = "select" | "gate" | "orders" | "exporting" | "done";
 type Flash = { type: "success" | "error" | "info"; text: string } | null;
 
 export default function DriverPage() {
-  const [step, setStep] = useState<Step>("info");
+  const [step, setStep] = useState<Step>("select");
+  const [trucks, setTrucks] = useState<DriverTruckOption[]>([]);
+  const [selected, setSelected] = useState<DriverTruckOption | null>(null);
   const [driverName, setDriverName] = useState("");
   const [vehiclePlate, setVehiclePlate] = useState("");
   const [session, setSession] = useState<SessionWithOrders | null>(null);
   const [flash, setFlash] = useState<Flash>(null);
   const [busy, setBusy] = useState(false);
+  const [showWalkIn, setShowWalkIn] = useState(false);
+  const [walkPlate, setWalkPlate] = useState("");
+  const [walkDriver, setWalkDriver] = useState("");
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showFlash = useCallback((f: NonNullable<Flash>) => {
@@ -33,21 +39,77 @@ export default function DriverPage() {
     flashTimer.current = setTimeout(() => setFlash(null), 2500);
   }, []);
 
+  const loadTrucks = useCallback(async () => {
+    try {
+      const date = todayDateString();
+      const res = await fetch(`/api/plans/trucks?date=${date}`, {
+        cache: "no-store",
+      });
+      const data = await res.json();
+      setTrucks(data.trucks ?? []);
+    } catch {
+      setTrucks([]);
+    }
+  }, []);
+
   useEffect(() => {
+    loadTrucks();
     return () => {
       if (flashTimer.current) clearTimeout(flashTimer.current);
     };
-  }, []);
+  }, [loadTrucks]);
+
+  const selectTruck = (truck: DriverTruckOption) => {
+    setSelected(truck);
+    setVehiclePlate(truck.vehiclePlate);
+    setDriverName(truck.driverName ?? "");
+    setStep("gate");
+  };
+
+  const registerWalkIn = async () => {
+    if (!walkPlate.trim()) {
+      showFlash({ type: "error", text: "Nhập biển số xe" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch("/api/plans/walk-in", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          planDate: todayDateString(),
+          vehiclePlate: walkPlate.trim(),
+          driverName: walkDriver.trim() || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi đăng ký");
+      setShowWalkIn(false);
+      setWalkPlate("");
+      setWalkDriver("");
+      await loadTrucks();
+      selectTruck(data.truck);
+      showFlash({ type: "success", text: "Đã đăng ký xe mới" });
+    } catch (e) {
+      showFlash({ type: "error", text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const handleGateScan = useCallback(
     async (gateCode: string) => {
-      if (busy || session) return;
+      if (busy || session || !vehiclePlate) return;
       setBusy(true);
       try {
         const res = await fetch("/api/sessions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ driverName, vehiclePlate, gateCode }),
+          body: JSON.stringify({
+            driverName: driverName || "Chưa xác định",
+            vehiclePlate,
+            gateCode,
+          }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "Lỗi tạo phiên");
@@ -144,11 +206,13 @@ export default function DriverPage() {
 
   const resetAll = useCallback(() => {
     setSession(null);
+    setSelected(null);
     setDriverName("");
     setVehiclePlate("");
-    setStep("info");
+    setStep("select");
     setFlash(null);
-  }, []);
+    loadTrucks();
+  }, [loadTrucks]);
 
   return (
     <main className="mx-auto flex w-full max-w-md flex-1 flex-col px-4 pb-10 pt-5">
@@ -178,27 +242,104 @@ export default function DriverPage() {
         </div>
       )}
 
-      {step === "info" && (
-        <InfoStep
-          driverName={driverName}
-          vehiclePlate={vehiclePlate}
-          setDriverName={setDriverName}
-          setVehiclePlate={setVehiclePlate}
-          onNext={() => setStep("gate")}
-        />
+      {step === "select" && (
+        <section className="flex flex-col gap-3">
+          <p className="text-center text-sm text-slate-600">
+            Chọn xe từ <b>kế hoạch vận tải hôm nay</b>
+          </p>
+          {trucks.length === 0 ? (
+            <div className="rounded-xl bg-amber-50 p-4 text-center text-sm text-amber-800">
+              Chưa có xe trong kế hoạch hôm nay. Bấm &quot;Đăng ký mới&quot; nếu
+              bạn là xe phát sinh.
+            </div>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {trucks.map((t) => (
+                <li key={t.vehiclePlate}>
+                  <button
+                    onClick={() => selectTruck(t)}
+                    className="w-full rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm active:bg-slate-50"
+                  >
+                    <p className="text-lg font-bold text-slate-900">
+                      {t.vehiclePlate}
+                    </p>
+                    <p className="text-sm text-slate-500">
+                      {t.driverName ?? "Chưa có tài xế"} · {t.gateCode ?? "-"}{" "}
+                      · {t.expectedTime ?? "-"} · {t.orderCount} đơn KH
+                      {t.isWalkIn && (
+                        <span className="ml-1 text-orange-600">· Phát sinh</span>
+                      )}
+                    </p>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {!showWalkIn ? (
+            <button
+              onClick={() => setShowWalkIn(true)}
+              className="rounded-xl border-2 border-dashed border-blue-300 py-3 text-sm font-semibold text-blue-700"
+            >
+              + Đăng ký mới (xe chưa có trong kế hoạch)
+            </button>
+          ) : (
+            <div className="rounded-xl border border-slate-200 bg-white p-4">
+              <h3 className="mb-3 font-bold text-slate-800">Đăng ký xe mới</h3>
+              <div className="flex flex-col gap-2">
+                <input
+                  value={walkPlate}
+                  onChange={(e) => setWalkPlate(e.target.value.toUpperCase())}
+                  placeholder="Biển số xe *"
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm uppercase"
+                />
+                <input
+                  value={walkDriver}
+                  onChange={(e) => setWalkDriver(e.target.value)}
+                  placeholder="Tên tài xế (tùy chọn)"
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div className="mt-3 flex gap-2">
+                <button
+                  onClick={registerWalkIn}
+                  disabled={busy}
+                  className="flex-1 rounded-lg bg-blue-600 py-2 text-sm font-semibold text-white disabled:bg-slate-300"
+                >
+                  Xác nhận
+                </button>
+                <button
+                  onClick={() => setShowWalkIn(false)}
+                  className="rounded-lg bg-slate-200 px-4 py-2 text-sm font-semibold"
+                >
+                  Hủy
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
       )}
 
-      {step === "gate" && (
+      {step === "gate" && selected && (
         <section className="flex flex-col gap-4">
+          <div className="rounded-xl bg-white p-3 shadow-sm text-sm">
+            <p className="font-bold text-slate-800">{vehiclePlate}</p>
+            <p className="text-slate-500">
+              {driverName || "Chưa có tài xế"} · Dự kiến {selected.expectedTime}{" "}
+              · {selected.gateCode}
+            </p>
+          </div>
           <p className="text-center text-sm text-slate-600">
-            Đưa camera vào mã QR của <b>cổng xuất hàng</b>
+            Đưa camera vào mã QR <b>cổng xuất hàng</b>
           </p>
           <QrScanner onResult={handleGateScan} paused={busy} />
           <button
-            onClick={() => setStep("info")}
-            className="rounded-xl bg-slate-200 py-3 font-semibold text-slate-600 active:bg-slate-300"
+            onClick={() => {
+              setStep("select");
+              setSelected(null);
+            }}
+            className="rounded-xl bg-slate-200 py-3 font-semibold text-slate-600"
           >
-            Quay lại
+            Quay lại chọn xe
           </button>
         </section>
       )}
@@ -225,9 +366,9 @@ export default function DriverPage() {
 }
 
 function StepIndicator({ step }: { step: Step }) {
-  const order: Step[] = ["info", "gate", "orders", "exporting", "done"];
+  const order: Step[] = ["select", "gate", "orders", "exporting", "done"];
   const labels: Record<Step, string> = {
-    info: "Thông tin",
+    select: "Chọn xe",
     gate: "Cổng",
     orders: "Đơn hàng",
     exporting: "Xuất",
@@ -253,62 +394,6 @@ function StepIndicator({ step }: { step: Step }) {
         </div>
       ))}
     </div>
-  );
-}
-
-function InfoStep({
-  driverName,
-  vehiclePlate,
-  setDriverName,
-  setVehiclePlate,
-  onNext,
-}: {
-  driverName: string;
-  vehiclePlate: string;
-  setDriverName: (v: string) => void;
-  setVehiclePlate: (v: string) => void;
-  onNext: () => void;
-}) {
-  const valid = driverName.trim() && vehiclePlate.trim();
-  return (
-    <form
-      className="flex flex-col gap-4"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (valid) onNext();
-      }}
-    >
-      <div className="flex flex-col gap-1.5">
-        <label className="text-sm font-semibold text-slate-700">
-          Tên tài xế
-        </label>
-        <input
-          value={driverName}
-          onChange={(e) => setDriverName(e.target.value)}
-          placeholder="Nguyễn Văn A"
-          className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-base outline-none focus:border-blue-500"
-          autoComplete="name"
-        />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <label className="text-sm font-semibold text-slate-700">
-          Biển số xe
-        </label>
-        <input
-          value={vehiclePlate}
-          onChange={(e) => setVehiclePlate(e.target.value.toUpperCase())}
-          placeholder="51C-123.45"
-          className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-base uppercase outline-none focus:border-blue-500"
-        />
-      </div>
-      <button
-        type="submit"
-        disabled={!valid}
-        className="mt-2 rounded-xl bg-blue-600 py-4 text-base font-bold text-white shadow active:bg-blue-700 disabled:bg-slate-300"
-      >
-        Tiếp tục → Quét cổng
-      </button>
-    </form>
   );
 }
 
@@ -341,7 +426,7 @@ function OrdersStep({
       </div>
 
       <p className="text-center text-sm text-slate-600">
-        Quét mã QR <b>đơn hàng xuất</b> (có thể quét nhiều đơn ghép)
+        Quét mã QR <b>đơn hàng xuất thực tế</b> (kho)
       </p>
       <QrScanner onResult={onScan} />
 

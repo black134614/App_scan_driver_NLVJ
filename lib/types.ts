@@ -65,3 +65,105 @@ export interface AdminOrderInput {
   id?: number;
   orderCode: string;
 }
+
+export type PlanSource = "import" | "manual" | "walk_in";
+export type PlanShift = "sang" | "chieu";
+export type TruckQueueStatus =
+  | "chua_vao"
+  | "dang_quet"
+  | "dang_xuat"
+  | "xong"
+  | "phat_sinh";
+
+export interface PlanOrderRow {
+  id: number;
+  plan_date: string;
+  gate_code: string;
+  expected_time: string;
+  expected_minutes: number;
+  shift: PlanShift;
+  order_code: string;
+  tonnage: number | null;
+  vehicle_plate: string | null;
+  driver_name: string | null;
+  source: PlanSource;
+  created_at: string;
+}
+
+export interface PlanOrderInput {
+  planDate: string;
+  gateCode: string;
+  expectedTime: string;
+  orderCode: string;
+  tonnage?: number | null;
+  vehiclePlate?: string | null;
+  driverName?: string | null;
+  source?: PlanSource;
+}
+
+export interface ParsedPlanRow {
+  planDate: string;
+  gateCode: string;
+  expectedTime: string;
+  orderCode: string;
+  tonnage: number | null;
+  vehiclePlate: string | null;
+  driverName: string | null;
+  errors: string[];
+}
+
+export interface PlanGridCell {
+  order: PlanOrderRow;
+  status: "planned" | "in_progress" | "done";
+}
+
+export interface PlanGrid {
+  gates: string[];
+  times: string[];
+  cells: Record<string, Record<string, PlanGridCell[]>>;
+}
+
+export interface PlanStats {
+  totalTonnage: number;
+  totalOrders: number;
+  totalTrucksMorning: number;
+  totalTrucksAfternoon: number;
+  pickedTonnage: number;
+  pickedOrders: number;
+  pickedTrucksMorning: number;
+  pickedTrucksAfternoon: number;
+  remainingTonnage: number;
+  remainingOrders: number;
+  remainingTrucksMorning: number;
+  remainingTrucksAfternoon: number;
+}
+
+export interface TruckQueueItem {
+  vehiclePlate: string;
+  driverName: string | null;
+  gateCode: string | null;
+  expectedTime: string | null;
+  orderCount: number;
+  status: TruckQueueStatus;
+  sessionId: number | null;
+  isWalkIn: boolean;
+}
+
+export interface PlanDayView {
+  date: string;
+  orders: PlanOrderRow[];
+  grid: PlanGrid;
+  stats: PlanStats;
+  queue: TruckQueueItem[];
+}
+
+export interface DriverTruckOption {
+  vehiclePlate: string;
+  driverName: string | null;
+  gateCode: string | null;
+  expectedTime: string | null;
+  orderCount: number;
+  isWalkIn: boolean;
+}
+
+export const MORNING_CUTOFF_MINUTES = 12 * 60;

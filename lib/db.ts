@@ -49,6 +49,22 @@ async function initSchema() {
     )`,
     "CREATE INDEX IF NOT EXISTS idx_orders_session ON orders(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)",
+    `CREATE TABLE IF NOT EXISTS plan_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      plan_date TEXT NOT NULL,
+      gate_code TEXT NOT NULL,
+      expected_time TEXT NOT NULL,
+      expected_minutes INTEGER NOT NULL,
+      shift TEXT NOT NULL,
+      order_code TEXT NOT NULL,
+      tonnage REAL,
+      vehicle_plate TEXT,
+      driver_name TEXT,
+      source TEXT NOT NULL DEFAULT 'manual',
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_plan_orders_date ON plan_orders(plan_date)",
+    "CREATE INDEX IF NOT EXISTS idx_plan_orders_plate ON plan_orders(vehicle_plate)",
   ]);
 }
 

@@ -4,13 +4,16 @@ Web app theo dõi tài xế xuất hàng: tài xế quét QR cổng bằng camer
 
 ## Tính năng
 
-- **Trang tài xế (`/`)** – tối ưu cho điện thoại (mobile-first), 5 bước:
-  1. Nhập tên tài xế + biển số xe.
-  2. Quét QR **cổng xuất hàng** bằng camera → tạo phiên.
-  3. Quét nhiều **đơn hàng xuất** (đơn ghép), chặn quét trùng, có nút xóa đơn quét sai.
-  4. Bấm **Bắt đầu xuất hàng** → hệ thống ước tính hoàn thành sau 30 phút và đếm ngược.
-  5. Bấm **Xuất xong** → ghi lại thời điểm hoàn thành thực tế.
-- **Dashboard quản lý (`/dashboard`)** – lưới các cổng và xe, đồng hồ đếm ngược 30 phút (đỏ khi quá giờ), thống kê nhanh, lịch sử phiên hoàn thành trong ngày. Tự làm mới mỗi 3 giây (polling).
+- **Trang tài xế (`/`)** – mobile-first:
+  1. Chọn xe từ **kế hoạch vận tải hôm nay** (hoặc đăng ký mới nếu xe phát sinh).
+  2. Quét QR **cổng xuất hàng** → tạo phiên.
+  3. Quét **đơn hàng xuất thực tế** (kho), chặn trùng, xóa đơn sai.
+  4. Bấm **Bắt đầu xuất hàng** (ước tính 30 phút).
+  5. Bấm **Xuất xong**.
+- **Kế hoạch vận tải (`/ke-hoach`)** – import Excel/CSV có preview, hoặc nhập tay; sửa/xóa kế hoạch theo ngày.
+- **Dashboard kế hoạch xuất (`/ke-hoach/dashboard`)** – lưới cổng × giờ giống Excel, thống kê tấn/lệnh/xe (đã lấy / còn lại), hàng đợi xe.
+- **Dashboard kho (`/dashboard`)** – theo dõi cổng/xe realtime, lọc, phân trang, xuất Excel.
+- **Quản lý ẩn (`/ql-du-lieu`)** – CRUD lịch sử (PIN bảo vệ).
 
 ## Công nghệ
 
@@ -25,7 +28,39 @@ npm install
 npm run dev
 ```
 
-Mở http://localhost:3000 (trang tài xế) và http://localhost:3000/dashboard (bảng theo dõi).
+Mở http://localhost:3000 (tài xế), http://localhost:3000/ke-hoach (kế hoạch VT), http://localhost:3000/ke-hoach/dashboard (dashboard KH), http://localhost:3000/dashboard (kho).
+
+## Import kế hoạch vận tải (Excel/CSV)
+
+Mỗi **dòng = 1 đơn/lệnh**. Header dòng đầu:
+
+| Cột | Bắt buộc | Ví dụ | Ghi chú |
+| --- | --- | --- | --- |
+| Ngày | Có | 2026-06-13 hoặc 13/06/2026 | Ngày kế hoạch |
+| Cổng | Có | Cua 3, TH | Cổng vào → cột lưới |
+| Giờ | Có | 6h30, 7h | Giờ dự kiến → hàng lưới |
+| Mã đơn | Có | HCM1, TINH-47 | Mã đơn/lệnh |
+| Số tấn | Không | 1.2 | Số tấn (thống kê) |
+| Số xe | Không | 51C-123.45 | Biển số → tài xế chọn xe |
+| Tài xế | Không | Nguyen Van A | Tên tài xế |
+
+App cũng đọc được tên cột không dấu: `Ngay`, `Cong`, `Gio`, `MaDon`, `SoTan`, `SoXe`, `TaiXe`.
+
+**Phân ca:** giờ < 12:00 = sáng, >= 12:00 = chiều.
+
+**Mẫu nhanh (copy vào Excel):**
+
+```
+Ngày       | Cổng   | Giờ  | Mã đơn   | Số tấn | Số xe     | Tài xế
+2026-06-13 | Cua 3  | 6h30 | HCM1     | 1.2    | 51C-111   | Tran A
+2026-06-13 | Cua 3  | 6h30 | HCM2     | 0.8    | 51C-111   | Tran A
+2026-06-13 | Cua 5  | 7h   | TINH-47  | 2.0    | 51C-222   | Le B
+2026-06-13 | TH     | 19h  | CHIEU-01 | 1.5    | 51C-333   |
+```
+
+Luồng: Transport import tại `/ke-hoach` → preview → Lưu → Dashboard KH hiển thị lưới → Tài xế chọn xe tại `/` → scan thực tế.
+
+**Tải file mẫu:** trên trang `/ke-hoach` bấm **Tải mẫu Excel**, hoặc mở `/api/plans/template?date=2026-06-13`.
 
 Build production:
 
@@ -111,23 +146,35 @@ Ngoài QR, scanner cũng đọc được các mã vạch phổ biến (Code 128,
 | `DELETE` | `/api/sessions/:id/orders/:orderId` | Xóa đơn quét sai |
 | `POST` | `/api/sessions/:id/start-export` | Bắt đầu xuất (ước tính +30 phút) |
 | `POST` | `/api/sessions/:id/finish` | Ghi nhận xuất xong |
+| `GET` | `/api/plans?date=` | Kế hoạch ngày (lưới + stats + queue) |
+| `POST` | `/api/plans` | Thêm đơn kế hoạch (nhập tay) |
+| `POST` | `/api/plans/import` | Import hàng loạt |
+| `GET` | `/api/plans/template?date=` | Tải file mẫu Excel import |
+| `GET` | `/api/plans/trucks?date=` | Danh sách xe cho tài xế |
+| `POST` | `/api/plans/walk-in` | Đăng ký xe phát sinh |
 
 ## Cấu trúc thư mục
 
 ```
 app/
-  page.tsx                 # Trang tài xế (5 bước)
-  dashboard/page.tsx       # Dashboard quản lý
-  api/sessions/...         # Route handlers
+  page.tsx                 # Trang tài xế
+  ke-hoach/page.tsx        # Kế hoạch vận tải (import + nhập tay)
+  ke-hoach/dashboard/      # Dashboard kế hoạch xuất (lưới Excel)
+  dashboard/page.tsx       # Dashboard kho
+  ql-du-lieu/page.tsx      # Quản lý ẩn
+  api/sessions/...         # Phiên scan thực tế
+  api/plans/...            # Kế hoạch vận tải
 components/
-  QrScanner.tsx            # Camera scanner (dynamic, ssr:false)
-  GateCard.tsx             # Thẻ hiển thị cổng/xe trên dashboard
+  AppNav.tsx               # Điều hướng giữa các trang
+  QrScanner.tsx
+  GateCard.tsx
 lib/
-  db.ts                    # Khởi tạo SQLite + schema
-  sessions.ts              # Truy vấn nghiệp vụ
-  types.ts                 # Kiểu dữ liệu dùng chung
-  format.ts                # Tiện ích định dạng thời gian
-data/tracking.db           # SQLite (tự tạo, đã .gitignore)
+  db.ts
+  sessions.ts
+  plans.ts                 # Logic kế hoạch vận tải
+  plan-parse.ts            # Parse Excel/import
+  types.ts
+  format.ts
 ```
 
 ## Ghi chú

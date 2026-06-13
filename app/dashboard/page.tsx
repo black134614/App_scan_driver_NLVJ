@@ -1,5 +1,6 @@
 "use client";
 
+import AppNav from "@/components/AppNav";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import GateCard from "@/components/GateCard";
@@ -197,6 +198,7 @@ export default function DashboardPage() {
 
   return (
     <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-5 sm:px-6">
+      <AppNav />
       <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-800">
