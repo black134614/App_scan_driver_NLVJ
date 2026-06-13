@@ -1,18 +1,34 @@
-import Database from "better-sqlite3";
+import { createClient, type Client } from "@libsql/client";
 import fs from "node:fs";
 import path from "node:path";
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const DB_PATH = path.join(DATA_DIR, "tracking.db");
+let client: Client | null = null;
+let schemaReady: Promise<void> | null = null;
 
-let dbInstance: Database.Database | null = null;
+function createDbClient(): Client {
+  const url = process.env.TURSO_DATABASE_URL;
+  const authToken = process.env.TURSO_AUTH_TOKEN;
 
-function initSchema(db: Database.Database) {
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
+  if (url) {
+    return createClient({ url, authToken });
+  }
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sessions (
+  const dataDir = path.join(process.cwd(), "data");
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+  return createClient({ url: `file:${path.join(dataDir, "tracking.db")}` });
+}
+
+export function getDb(): Client {
+  if (!client) client = createDbClient();
+  return client;
+}
+
+async function initSchema() {
+  const db = getDb();
+  await db.batch([
+    `CREATE TABLE IF NOT EXISTS sessions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       driver_name TEXT NOT NULL,
       vehicle_plate TEXT NOT NULL,
@@ -22,31 +38,51 @@ function initSchema(db: Database.Database) {
       export_started_at TEXT,
       export_estimated_at TEXT,
       export_finished_at TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS orders (
+    )`,
+    `CREATE TABLE IF NOT EXISTS orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_id INTEGER NOT NULL,
       order_code TEXT NOT NULL,
       scanned_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
       UNIQUE (session_id, order_code)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_orders_session ON orders(session_id);
-    CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
-  `);
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_orders_session ON orders(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)",
+  ]);
 }
 
-export function getDb(): Database.Database {
-  if (dbInstance) return dbInstance;
+export async function ensureDb() {
+  getDb();
+  if (!schemaReady) schemaReady = initSchema();
+  await schemaReady;
+}
 
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
+export async function dbAll<T>(
+  sql: string,
+  args: (string | number | null)[] = []
+): Promise<T[]> {
+  await ensureDb();
+  const result = await getDb().execute({ sql, args });
+  return result.rows as T[];
+}
 
-  const db = new Database(DB_PATH);
-  initSchema(db);
-  dbInstance = db;
-  return db;
+export async function dbGet<T>(
+  sql: string,
+  args: (string | number | null)[] = []
+): Promise<T | undefined> {
+  const rows = await dbAll<T>(sql, args);
+  return rows[0];
+}
+
+export async function dbRun(
+  sql: string,
+  args: (string | number | null)[] = []
+): Promise<{ lastInsertRowid: number; changes: number }> {
+  await ensureDb();
+  const result = await getDb().execute({ sql, args });
+  return {
+    lastInsertRowid: Number(result.lastInsertRowid ?? 0),
+    changes: result.rowsAffected ?? 0,
+  };
 }

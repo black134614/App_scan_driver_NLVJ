@@ -17,7 +17,7 @@ function parseFilters(searchParams: URLSearchParams): SessionFilters {
 
 export async function GET(req: NextRequest) {
   const filters = parseFilters(req.nextUrl.searchParams);
-  const sessions = listSessionsForExport(filters);
+  const sessions = await listSessionsForExport(filters);
   const buffer = buildSessionsWorkbook(sessions);
   const filename = `xuat-hang-${new Date().toISOString().slice(0, 10)}.xlsx`;
 

@@ -29,12 +29,12 @@ export async function GET(req: NextRequest) {
     const filters = parseFilters(searchParams);
     const page = Math.max(1, Number(pageParam) || 1);
     const limit = parsePageSize(limitParam);
-    const result = searchSessions(filters, page, limit);
-    const filterOptions = getFilterOptions();
+    const result = await searchSessions(filters, page, limit);
+    const filterOptions = await getFilterOptions();
     return NextResponse.json({ ...result, filterOptions });
   }
 
-  const sessions = listSessions();
+  const sessions = await listSessions();
   return NextResponse.json({ sessions });
 }
 
@@ -63,6 +63,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const session = createSession(driver, plate, gate);
+  const session = await createSession(driver, plate, gate);
   return NextResponse.json({ session }, { status: 201 });
 }

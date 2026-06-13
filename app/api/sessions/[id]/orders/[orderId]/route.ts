@@ -15,11 +15,11 @@ export async function DELETE(
     return NextResponse.json({ error: "ID không hợp lệ" }, { status: 400 });
   }
 
-  const removed = deleteOrder(sessionId, oid);
+  const removed = await deleteOrder(sessionId, oid);
   if (!removed) {
     return NextResponse.json({ error: "Không tìm thấy đơn" }, { status: 404 });
   }
 
-  const session = getSession(sessionId);
+  const session = await getSession(sessionId);
   return NextResponse.json({ session });
 }

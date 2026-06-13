@@ -27,7 +27,7 @@ export async function POST(
     return NextResponse.json({ error: "Thiếu mã đơn hàng" }, { status: 400 });
   }
 
-  const result = addOrder(sessionId, code);
+  const result = await addOrder(sessionId, code);
   if (!result.ok) {
     if (result.reason === "not_found") {
       return NextResponse.json(
@@ -41,6 +41,6 @@ export async function POST(
     );
   }
 
-  const session = getSession(sessionId);
+  const session = await getSession(sessionId);
   return NextResponse.json({ order: result.order, session }, { status: 201 });
 }

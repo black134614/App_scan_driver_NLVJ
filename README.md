@@ -15,7 +15,7 @@ Web app theo dõi tài xế xuất hàng: tài xế quét QR cổng bằng camer
 ## Công nghệ
 
 - Next.js 16 (App Router) + TypeScript + Tailwind CSS
-- SQLite qua `better-sqlite3` (file `data/tracking.db`, tự tạo khi chạy)
+- SQLite qua `@libsql/client` — local: file `data/tracking.db`; production (Vercel): [Turso](https://turso.tech)
 - Quét QR/mã vạch bằng camera trình duyệt qua `@yudiel/react-qr-scanner`
 
 ## Chạy dự án
@@ -33,6 +33,41 @@ Build production:
 npm run build
 npm run start
 ```
+
+## Deploy lên Vercel (database)
+
+Vercel **không hỗ trợ** ghi file SQLite local. App dùng **Turso** (SQLite trên cloud, miễn phí tier).
+
+### Bước 1: Tạo database Turso
+
+1. Đăng ký tại https://turso.tech và cài CLI (hoặc tạo DB trên dashboard web).
+2. Tạo database:
+
+```bash
+turso db create gate-tracking
+turso db show gate-tracking --url
+turso db tokens create gate-tracking
+```
+
+3. Lấy 2 giá trị:
+   - **URL** dạng `libsql://gate-tracking-xxx.turso.io`
+   - **Auth token** (chuỗi dài)
+
+### Bước 2: Thêm biến môi trường trên Vercel
+
+Vào project Vercel → **Settings → Environment Variables**, thêm:
+
+| Tên | Giá trị |
+| --- | --- |
+| `TURSO_DATABASE_URL` | URL từ bước 1 |
+| `TURSO_AUTH_TOKEN` | Token từ bước 1 |
+| `ADMIN_SECRET` | Mã PIN trang `/ql-du-lieu` (tùy chọn) |
+
+### Bước 3: Redeploy
+
+Sau khi thêm biến môi trường, bấm **Redeploy** trên Vercel. Schema bảng tự tạo khi API chạy lần đầu.
+
+**Local dev:** không cần Turso — app tự dùng file `data/tracking.db`.
 
 ## Quan trọng: camera cần HTTPS
 

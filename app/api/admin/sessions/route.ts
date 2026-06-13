@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
   const page = Math.max(1, Number(searchParams.get("page")) || 1);
   const limit = parsePageSize(searchParams.get("limit"));
 
-  const result = searchSessions({}, page, limit);
+  const result = await searchSessions({}, page, limit);
   return NextResponse.json(result);
 }
 
@@ -61,7 +61,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const session = adminCreateSession(input);
+  const session = await adminCreateSession(input);
   return NextResponse.json({ session }, { status: 201 });
 }
 

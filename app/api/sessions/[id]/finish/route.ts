@@ -14,7 +14,7 @@ export async function POST(
     return NextResponse.json({ error: "ID không hợp lệ" }, { status: 400 });
   }
 
-  const session = finishExport(sessionId);
+  const session = await finishExport(sessionId);
   if (!session) {
     return NextResponse.json({ error: "Không tìm thấy phiên" }, { status: 404 });
   }

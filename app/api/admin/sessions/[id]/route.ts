@@ -53,7 +53,7 @@ export async function GET(
     return NextResponse.json({ error: "ID không hợp lệ" }, { status: 400 });
   }
 
-  const session = getSession(sessionId);
+  const session = await getSession(sessionId);
   if (!session) {
     return NextResponse.json({ error: "Không tìm thấy phiên" }, { status: 404 });
   }
@@ -87,13 +87,13 @@ export async function PUT(
     );
   }
 
-  const session = updateSession(sessionId, input);
+  const session = await updateSession(sessionId, input);
   if (!session) {
     return NextResponse.json({ error: "Không tìm thấy phiên" }, { status: 404 });
   }
 
   const orders = parseOrders(body);
-  const updated = syncSessionOrders(sessionId, orders);
+  const updated = await syncSessionOrders(sessionId, orders);
   return NextResponse.json({ session: updated });
 }
 
@@ -109,7 +109,7 @@ export async function DELETE(
     return NextResponse.json({ error: "ID không hợp lệ" }, { status: 400 });
   }
 
-  const removed = deleteSession(sessionId);
+  const removed = await deleteSession(sessionId);
   if (!removed) {
     return NextResponse.json({ error: "Không tìm thấy phiên" }, { status: 404 });
   }

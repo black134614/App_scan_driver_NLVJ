@@ -1,4 +1,4 @@
-import { getDb } from "./db";
+import { dbAll, dbGet, dbRun } from "./db";
 import {
   AdminOrderInput,
   AdminSessionInput,
@@ -14,51 +14,58 @@ import {
   SessionWithOrders,
 } from "./types";
 
-function attachOrders(session: SessionRow): SessionWithOrders {
-  const db = getDb();
-  const orders = db
-    .prepare(
-      "SELECT * FROM orders WHERE session_id = ? ORDER BY scanned_at ASC, id ASC"
-    )
-    .all(session.id) as OrderRow[];
+async function fetchOrders(sessionId: number): Promise<OrderRow[]> {
+  return dbAll<OrderRow>(
+    "SELECT * FROM orders WHERE session_id = ? ORDER BY scanned_at ASC, id ASC",
+    [sessionId]
+  );
+}
+
+async function attachOrders(session: SessionRow): Promise<SessionWithOrders> {
+  const orders = await fetchOrders(session.id);
   return { ...session, orders, orders_count: orders.length };
 }
 
-export function createSession(
+async function attachOrdersMany(
+  sessions: SessionRow[]
+): Promise<SessionWithOrders[]> {
+  return Promise.all(sessions.map(attachOrders));
+}
+
+export async function createSession(
   driverName: string,
   vehiclePlate: string,
   gateCode: string
-): SessionWithOrders {
-  const db = getDb();
-  const info = db
-    .prepare(
-      `INSERT INTO sessions (driver_name, vehicle_plate, gate_code, status)
-       VALUES (?, ?, ?, 'scanning')`
-    )
-    .run(driverName, vehiclePlate, gateCode);
-  return getSession(Number(info.lastInsertRowid))!;
+): Promise<SessionWithOrders> {
+  const info = await dbRun(
+    `INSERT INTO sessions (driver_name, vehicle_plate, gate_code, status)
+     VALUES (?, ?, ?, 'scanning')`,
+    [driverName, vehiclePlate, gateCode]
+  );
+  return (await getSession(Number(info.lastInsertRowid)))!;
 }
 
-export function getSession(id: number): SessionWithOrders | null {
-  const db = getDb();
-  const session = db
-    .prepare("SELECT * FROM sessions WHERE id = ?")
-    .get(id) as SessionRow | undefined;
+export async function getSession(
+  id: number
+): Promise<SessionWithOrders | null> {
+  const session = await dbGet<SessionRow>(
+    "SELECT * FROM sessions WHERE id = ?",
+    [id]
+  );
   if (!session) return null;
   return attachOrders(session);
 }
 
-export function listSessions(): SessionWithOrders[] {
-  const db = getDb();
-  const sessions = db
-    .prepare("SELECT * FROM sessions ORDER BY created_at DESC, id DESC")
-    .all() as SessionRow[];
-  return sessions.map(attachOrders);
+export async function listSessions(): Promise<SessionWithOrders[]> {
+  const sessions = await dbAll<SessionRow>(
+    "SELECT * FROM sessions ORDER BY created_at DESC, id DESC"
+  );
+  return attachOrdersMany(sessions);
 }
 
 function buildFilterClause(filters: SessionFilters) {
   const conditions: string[] = [];
-  const params: unknown[] = [];
+  const params: (string | number)[] = [];
 
   if (filters.gate?.trim()) {
     conditions.push("s.gate_code LIKE ?");
@@ -86,33 +93,32 @@ function buildFilterClause(filters: SessionFilters) {
   return { where, params };
 }
 
-export function searchSessions(
+export async function searchSessions(
   filters: SessionFilters,
   page: number,
   limit: PageSize
-): PaginatedSessions {
-  const db = getDb();
+): Promise<PaginatedSessions> {
   const { where, params } = buildFilterClause(filters);
 
-  const countRow = db
-    .prepare(`SELECT COUNT(*) AS total FROM sessions s ${where}`)
-    .get(...params) as { total: number };
-  const total = countRow.total;
+  const countRow = await dbGet<{ total: number }>(
+    `SELECT COUNT(*) AS total FROM sessions s ${where}`,
+    params
+  );
+  const total = countRow?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / limit));
   const safePage = Math.min(Math.max(1, page), totalPages);
   const offset = (safePage - 1) * limit;
 
-  const rows = db
-    .prepare(
-      `SELECT s.* FROM sessions s
-       ${where}
-       ORDER BY COALESCE(s.export_finished_at, s.export_started_at, s.created_at) DESC, s.id DESC
-       LIMIT ? OFFSET ?`
-    )
-    .all(...params, limit, offset) as SessionRow[];
+  const rows = await dbAll<SessionRow>(
+    `SELECT s.* FROM sessions s
+     ${where}
+     ORDER BY COALESCE(s.export_finished_at, s.export_started_at, s.created_at) DESC, s.id DESC
+     LIMIT ? OFFSET ?`,
+    [...params, limit, offset]
+  );
 
   return {
-    sessions: rows.map(attachOrders),
+    sessions: await attachOrdersMany(rows),
     total,
     page: safePage,
     limit,
@@ -120,31 +126,26 @@ export function searchSessions(
   };
 }
 
-export function listSessionsForExport(filters: SessionFilters): SessionWithOrders[] {
-  const db = getDb();
+export async function listSessionsForExport(
+  filters: SessionFilters
+): Promise<SessionWithOrders[]> {
   const { where, params } = buildFilterClause(filters);
-  const rows = db
-    .prepare(
-      `SELECT s.* FROM sessions s
-       ${where}
-       ORDER BY COALESCE(s.export_finished_at, s.export_started_at, s.created_at) DESC, s.id DESC`
-    )
-    .all(...params) as SessionRow[];
-  return rows.map(attachOrders);
+  const rows = await dbAll<SessionRow>(
+    `SELECT s.* FROM sessions s
+     ${where}
+     ORDER BY COALESCE(s.export_finished_at, s.export_started_at, s.created_at) DESC, s.id DESC`,
+    params
+  );
+  return attachOrdersMany(rows);
 }
 
-export function getFilterOptions(): FilterOptions {
-  const db = getDb();
-  const gates = db
-    .prepare(
-      "SELECT DISTINCT gate_code FROM sessions ORDER BY gate_code ASC"
-    )
-    .all() as { gate_code: string }[];
-  const drivers = db
-    .prepare(
-      "SELECT DISTINCT driver_name FROM sessions ORDER BY driver_name ASC"
-    )
-    .all() as { driver_name: string }[];
+export async function getFilterOptions(): Promise<FilterOptions> {
+  const gates = await dbAll<{ gate_code: string }>(
+    "SELECT DISTINCT gate_code FROM sessions ORDER BY gate_code ASC"
+  );
+  const drivers = await dbAll<{ driver_name: string }>(
+    "SELECT DISTINCT driver_name FROM sessions ORDER BY driver_name ASC"
+  );
   return {
     gates: gates.map((g) => g.gate_code),
     drivers: drivers.map((d) => d.driver_name),
@@ -161,68 +162,73 @@ export type AddOrderResult =
   | { ok: true; order: OrderRow }
   | { ok: false; reason: "duplicate" | "not_found" };
 
-export function addOrder(
+export async function addOrder(
   sessionId: number,
   orderCode: string
-): AddOrderResult {
-  const db = getDb();
-  const session = db
-    .prepare("SELECT id FROM sessions WHERE id = ?")
-    .get(sessionId);
+): Promise<AddOrderResult> {
+  const session = await dbGet<{ id: number }>(
+    "SELECT id FROM sessions WHERE id = ?",
+    [sessionId]
+  );
   if (!session) return { ok: false, reason: "not_found" };
 
-  const existing = db
-    .prepare(
-      "SELECT * FROM orders WHERE session_id = ? AND order_code = ?"
-    )
-    .get(sessionId, orderCode) as OrderRow | undefined;
+  const existing = await dbGet<OrderRow>(
+    "SELECT * FROM orders WHERE session_id = ? AND order_code = ?",
+    [sessionId, orderCode]
+  );
   if (existing) return { ok: false, reason: "duplicate" };
 
-  const info = db
-    .prepare(
-      "INSERT INTO orders (session_id, order_code) VALUES (?, ?)"
-    )
-    .run(sessionId, orderCode);
-  const order = db
-    .prepare("SELECT * FROM orders WHERE id = ?")
-    .get(Number(info.lastInsertRowid)) as OrderRow;
-  return { ok: true, order };
+  const info = await dbRun(
+    "INSERT INTO orders (session_id, order_code) VALUES (?, ?)",
+    [sessionId, orderCode]
+  );
+  const order = await dbGet<OrderRow>("SELECT * FROM orders WHERE id = ?", [
+    Number(info.lastInsertRowid),
+  ]);
+  return { ok: true, order: order! };
 }
 
-export function deleteOrder(sessionId: number, orderId: number): boolean {
-  const db = getDb();
-  const info = db
-    .prepare("DELETE FROM orders WHERE id = ? AND session_id = ?")
-    .run(orderId, sessionId);
+export async function deleteOrder(
+  sessionId: number,
+  orderId: number
+): Promise<boolean> {
+  const info = await dbRun(
+    "DELETE FROM orders WHERE id = ? AND session_id = ?",
+    [orderId, sessionId]
+  );
   return info.changes > 0;
 }
 
-export function startExport(sessionId: number): SessionWithOrders | null {
-  const db = getDb();
-  const session = getSession(sessionId);
+export async function startExport(
+  sessionId: number
+): Promise<SessionWithOrders | null> {
+  const session = await getSession(sessionId);
   if (!session) return null;
 
-  db.prepare(
+  await dbRun(
     `UPDATE sessions
      SET status = 'exporting',
          export_started_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
          export_estimated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+${EXPORT_ESTIMATE_MINUTES} minutes')
-     WHERE id = ?`
-  ).run(sessionId);
+     WHERE id = ?`,
+    [sessionId]
+  );
   return getSession(sessionId);
 }
 
-export function finishExport(sessionId: number): SessionWithOrders | null {
-  const db = getDb();
-  const session = getSession(sessionId);
+export async function finishExport(
+  sessionId: number
+): Promise<SessionWithOrders | null> {
+  const session = await getSession(sessionId);
   if (!session) return null;
 
-  db.prepare(
+  await dbRun(
     `UPDATE sessions
      SET status = 'done',
          export_finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-     WHERE id = ?`
-  ).run(sessionId);
+     WHERE id = ?`,
+    [sessionId]
+  );
   return getSession(sessionId);
 }
 
@@ -239,19 +245,18 @@ function normalizeIso(value: string | null | undefined): string | null {
   return d.toISOString();
 }
 
-export function adminCreateSession(input: AdminSessionInput): SessionWithOrders {
-  const db = getDb();
+export async function adminCreateSession(
+  input: AdminSessionInput
+): Promise<SessionWithOrders> {
   const status = normalizeStatus(input.status);
   const createdAt = normalizeIso(input.createdAt) ?? new Date().toISOString();
 
-  const info = db
-    .prepare(
-      `INSERT INTO sessions (
-         driver_name, vehicle_plate, gate_code, status,
-         created_at, export_started_at, export_estimated_at, export_finished_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
+  const info = await dbRun(
+    `INSERT INTO sessions (
+       driver_name, vehicle_plate, gate_code, status,
+       created_at, export_started_at, export_estimated_at, export_finished_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
       input.driverName.trim(),
       input.vehiclePlate.trim().toUpperCase(),
       input.gateCode.trim(),
@@ -259,30 +264,31 @@ export function adminCreateSession(input: AdminSessionInput): SessionWithOrders 
       createdAt,
       normalizeIso(input.exportStartedAt),
       normalizeIso(input.exportEstimatedAt),
-      normalizeIso(input.exportFinishedAt)
-    );
+      normalizeIso(input.exportFinishedAt),
+    ]
+  );
 
   const sessionId = Number(info.lastInsertRowid);
   const codes = (input.orderCodes ?? [])
     .map((c) => c.trim())
     .filter(Boolean);
   for (const code of codes) {
-    db.prepare(
-      "INSERT INTO orders (session_id, order_code) VALUES (?, ?)"
-    ).run(sessionId, code);
+    await dbRun(
+      "INSERT INTO orders (session_id, order_code) VALUES (?, ?)",
+      [sessionId, code]
+    );
   }
-  return getSession(sessionId)!;
+  return (await getSession(sessionId))!;
 }
 
-export function updateSession(
+export async function updateSession(
   sessionId: number,
   input: AdminSessionInput
-): SessionWithOrders | null {
-  const db = getDb();
-  const existing = getSession(sessionId);
+): Promise<SessionWithOrders | null> {
+  const existing = await getSession(sessionId);
   if (!existing) return null;
 
-  db.prepare(
+  await dbRun(
     `UPDATE sessions SET
        driver_name = ?,
        vehicle_plate = ?,
@@ -292,37 +298,35 @@ export function updateSession(
        export_started_at = ?,
        export_estimated_at = ?,
        export_finished_at = ?
-     WHERE id = ?`
-  ).run(
-    input.driverName.trim(),
-    input.vehiclePlate.trim().toUpperCase(),
-    input.gateCode.trim(),
-    normalizeStatus(input.status),
-    normalizeIso(input.createdAt ?? undefined),
-    normalizeIso(input.exportStartedAt),
-    normalizeIso(input.exportEstimatedAt),
-    normalizeIso(input.exportFinishedAt),
-    sessionId
+     WHERE id = ?`,
+    [
+      input.driverName.trim(),
+      input.vehiclePlate.trim().toUpperCase(),
+      input.gateCode.trim(),
+      normalizeStatus(input.status),
+      normalizeIso(input.createdAt ?? undefined),
+      normalizeIso(input.exportStartedAt),
+      normalizeIso(input.exportEstimatedAt),
+      normalizeIso(input.exportFinishedAt),
+      sessionId,
+    ]
   );
 
   return getSession(sessionId);
 }
 
-export function syncSessionOrders(
+export async function syncSessionOrders(
   sessionId: number,
   orders: AdminOrderInput[]
-): SessionWithOrders | null {
-  const db = getDb();
-  const session = getSession(sessionId);
+): Promise<SessionWithOrders | null> {
+  const session = await getSession(sessionId);
   if (!session) return null;
 
-  const existingIds = new Set(
-    (
-      db
-        .prepare("SELECT id FROM orders WHERE session_id = ?")
-        .all(sessionId) as { id: number }[]
-    ).map((r) => r.id)
+  const existingRows = await dbAll<{ id: number }>(
+    "SELECT id FROM orders WHERE session_id = ?",
+    [sessionId]
   );
+  const existingIds = new Set(existingRows.map((r) => r.id));
   const keepIds = new Set<number>();
 
   for (const item of orders) {
@@ -330,24 +334,23 @@ export function syncSessionOrders(
     if (!code) continue;
 
     if (item.id && existingIds.has(item.id)) {
-      db.prepare(
-        "UPDATE orders SET order_code = ? WHERE id = ? AND session_id = ?"
-      ).run(code, item.id, sessionId);
+      await dbRun(
+        "UPDATE orders SET order_code = ? WHERE id = ? AND session_id = ?",
+        [code, item.id, sessionId]
+      );
       keepIds.add(item.id);
     } else if (!item.id) {
-      const dup = db
-        .prepare(
-          "SELECT id FROM orders WHERE session_id = ? AND order_code = ?"
-        )
-        .get(sessionId, code) as { id: number } | undefined;
+      const dup = await dbGet<{ id: number }>(
+        "SELECT id FROM orders WHERE session_id = ? AND order_code = ?",
+        [sessionId, code]
+      );
       if (dup) {
         keepIds.add(dup.id);
       } else {
-        const info = db
-          .prepare(
-            "INSERT INTO orders (session_id, order_code) VALUES (?, ?)"
-          )
-          .run(sessionId, code);
+        const info = await dbRun(
+          "INSERT INTO orders (session_id, order_code) VALUES (?, ?)",
+          [sessionId, code]
+        );
         keepIds.add(Number(info.lastInsertRowid));
       }
     }
@@ -355,18 +358,17 @@ export function syncSessionOrders(
 
   for (const id of existingIds) {
     if (!keepIds.has(id)) {
-      db.prepare("DELETE FROM orders WHERE id = ? AND session_id = ?").run(
+      await dbRun("DELETE FROM orders WHERE id = ? AND session_id = ?", [
         id,
-        sessionId
-      );
+        sessionId,
+      ]);
     }
   }
 
   return getSession(sessionId);
 }
 
-export function deleteSession(sessionId: number): boolean {
-  const db = getDb();
-  const info = db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
+export async function deleteSession(sessionId: number): Promise<boolean> {
+  const info = await dbRun("DELETE FROM sessions WHERE id = ?", [sessionId]);
   return info.changes > 0;
 }
