@@ -90,6 +90,7 @@ export interface CarrierRow {
   name: string;
   token: string;
   active: number;
+  color_key: string | null;
   created_at: string;
 }
 
@@ -212,6 +213,7 @@ export interface PlanDayView {
   queue: TruckQueueItem[];
   gateCarriers: Record<string, string>;
   gateNames: Record<string, string>;
+  carrierColors: Record<string, string>;
 }
 
 export interface DriverTruckOption {

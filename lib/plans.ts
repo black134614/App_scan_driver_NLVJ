@@ -1,5 +1,5 @@
 import { dbAll, dbGet, dbRun } from "./db";
-import { getCarrier, getCarrierGates, getGateCarrierNameMap, getGateNameMap } from "./config";
+import { getCarrier, getCarrierGates, getGateCarrierNameMap, getGateNameMap, getCarrierColorNameMap } from "./config";
 import {
   getAvailableSlotsForCarrier,
   getOccupiedSlotMinutes,
@@ -448,6 +448,7 @@ export async function getPlanDayView(
   const grid = buildGridWithStatus(orders, sessions);
   const gateCarriers = await getGateCarrierNameMap();
   const gateNames = await getGateNameMap();
+  const carrierColors = await getCarrierColorNameMap();
 
   for (const order of orders) {
     if (order.carrier_id && !gateCarriers[order.gate_code]) {
@@ -472,6 +473,7 @@ export async function getPlanDayView(
     queue: buildTruckQueue(orders, sessions),
     gateCarriers,
     gateNames,
+    carrierColors,
   };
 }
 

@@ -14,6 +14,11 @@ import {
 } from "@/lib/gate-weekdays";
 import { minutesToTimeLabel } from "@/lib/plan-parse";
 import { cardCls, inputCls, tableHeadCls, tableRowHoverCls } from "@/lib/ui";
+import {
+  CARRIER_COLOR_OPTIONS,
+  carrierColorStyleByKey,
+  type CarrierColorKey,
+} from "@/lib/carrier-colors";
 import type { CarrierRow, GateRow } from "@/lib/types";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -41,6 +46,7 @@ export default function CauHinhPage() {
   const [error, setError] = useState("");
   const [pageLoading, setPageLoading] = useState(true);
   const [savingCarrier, setSavingCarrier] = useState(false);
+  const [savingColorId, setSavingColorId] = useState<number | null>(null);
   const [savingGate, setSavingGate] = useState(false);
   const [savingEditGate, setSavingEditGate] = useState(false);
   const [savingAssignment, setSavingAssignment] = useState(false);
@@ -221,6 +227,31 @@ export default function CauHinhPage() {
     load({ silent: true });
     } finally {
       setSavingCarrier(false);
+    }
+  };
+
+  const updateCarrierColor = async (id: number, color_key: CarrierColorKey) => {
+    setSavingColorId(id);
+    clearFeedback();
+    try {
+      const res = await fetch(`/api/config/carriers/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ color_key }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Không lưu được màu");
+        return;
+      }
+      setCarriers((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, color_key } : c))
+      );
+      setMessage("Đã cập nhật màu dashboard");
+    } catch {
+      setError("Không lưu được màu");
+    } finally {
+      setSavingColorId(null);
     }
   };
 
@@ -519,7 +550,7 @@ export default function CauHinhPage() {
           </div>
           <div className={`overflow-hidden ${cardCls}`}>
             {pageLoading ? (
-              <SkeletonTable rows={4} cols={4} />
+              <SkeletonTable rows={4} cols={5} />
             ) : carriers.length === 0 ? (
               <p className="py-12 text-center text-sm text-slate-400">
                 Chưa có nhà vận tải
@@ -530,15 +561,45 @@ export default function CauHinhPage() {
                 <tr>
                   <th className="px-3 py-2">Mã</th>
                   <th className="px-3 py-2">Tên</th>
+                  <th className="px-3 py-2">Màu dashboard</th>
                   <th className="px-3 py-2">Link</th>
                   <th className="px-3 py-2">Thao tác</th>
                 </tr>
               </thead>
               <tbody>
-                {carriers.map((c) => (
+                {carriers.map((c) => {
+                  const preview =
+                    carrierColorStyleByKey(c.color_key) ??
+                    carrierColorStyleByKey("slate")!;
+                  return (
                   <tr key={c.id} className={`border-t border-slate-100 ${tableRowHoverCls}`}>
                     <td className="px-3 py-2 font-mono font-semibold">{c.code}</td>
                     <td className="px-3 py-2">{c.name}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`inline-block h-7 w-10 shrink-0 rounded border-2 ${preview.headerBg} ${preview.border}`}
+                          title="Xem trước màu header"
+                        />
+                        <select
+                          className={`min-w-[130px] ${inputCls} py-1.5 text-sm`}
+                          value={c.color_key ?? "slate"}
+                          disabled={savingColorId === c.id}
+                          onChange={(e) =>
+                            updateCarrierColor(
+                              c.id,
+                              e.target.value as CarrierColorKey
+                            )
+                          }
+                        >
+                          {CARRIER_COLOR_OPTIONS.map((opt) => (
+                            <option key={opt.key} value={opt.key}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </td>
                     <td className="px-3 py-2">
                       <Button
                         size="sm"
@@ -577,7 +638,8 @@ export default function CauHinhPage() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
             )}

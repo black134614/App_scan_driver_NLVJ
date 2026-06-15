@@ -178,6 +178,7 @@ export default function KeHoachDashboardPage() {
   const queue = view?.queue ?? [];
   const gateCarriers = view?.gateCarriers ?? {};
   const gateNames = view?.gateNames ?? {};
+  const carrierColors = view?.carrierColors ?? {};
   const gateCount = grid?.gates.length ?? 0;
   const statsOnSide = gateCount > 0 && gateCount <= 5;
 
@@ -272,6 +273,7 @@ export default function KeHoachDashboardPage() {
             grid={filteredGrid}
             gateCarriers={gateCarriers}
             gateNames={gateNames}
+            carrierColors={carrierColors}
             onDetail={openDetail}
           />
           <GridSection
@@ -281,6 +283,7 @@ export default function KeHoachDashboardPage() {
             grid={filteredGrid}
             gateCarriers={gateCarriers}
             gateNames={gateNames}
+            carrierColors={carrierColors}
             onDetail={openDetail}
           />
         </>
@@ -431,6 +434,7 @@ function GridSection({
   grid,
   gateCarriers,
   gateNames,
+  carrierColors,
   onDetail,
 }: {
   title: string;
@@ -439,6 +443,7 @@ function GridSection({
   grid: PlanDayView["grid"];
   gateCarriers: Record<string, string>;
   gateNames: Record<string, string>;
+  carrierColors: Record<string, string>;
   onDetail: (plate: string) => void;
 }) {
   if (times.length === 0) return null;
@@ -471,7 +476,10 @@ function GridSection({
                 Khung TG
               </th>
               {groups.map((g) => {
-                const colors = carrierColorStyle(g.carrierName);
+                const colors = carrierColorStyle(
+                  g.carrierName,
+                  carrierColors[g.carrierName]
+                );
                 return (
                   <th
                     key={g.carrierName}
@@ -485,7 +493,10 @@ function GridSection({
             </tr>
             <tr>
               {groups.flatMap((g) => {
-                const colors = carrierColorStyle(g.carrierName);
+                const colors = carrierColorStyle(
+                  g.carrierName,
+                  carrierColors[g.carrierName]
+                );
                 return g.gates.map((gate) => (
                   <th
                     key={gate}

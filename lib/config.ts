@@ -1,5 +1,9 @@
 import { dbAll, dbGet, dbRun } from "./db";
 import { generateSlots } from "./slots";
+import {
+  isCarrierColorKey,
+  pickDefaultCarrierColorKey,
+} from "./carrier-colors";
 import type {
   CarrierRow,
   GateRow,
@@ -33,29 +37,53 @@ export async function createCarrier(input: {
   name: string;
 }): Promise<CarrierRow> {
   const token = randomToken();
+  const existing = await listCarriers();
+  const color_key = pickDefaultCarrierColorKey(
+    existing.map((c) => c.color_key)
+  );
   const info = await dbRun(
-    "INSERT INTO carriers (code, name, token) VALUES (?, ?, ?)",
-    [input.code.trim().toUpperCase(), input.name.trim(), token]
+    "INSERT INTO carriers (code, name, token, color_key) VALUES (?, ?, ?, ?)",
+    [input.code.trim().toUpperCase(), input.name.trim(), token, color_key]
   );
   return (await getCarrier(Number(info.lastInsertRowid)))!;
 }
 
 export async function updateCarrier(
   id: number,
-  input: { code?: string; name?: string; active?: boolean }
+  input: { code?: string; name?: string; active?: boolean; color_key?: string }
 ): Promise<CarrierRow | null> {
   const existing = await getCarrier(id);
   if (!existing) return null;
+  let color_key = existing.color_key;
+  if (input.color_key !== undefined) {
+    if (!isCarrierColorKey(input.color_key)) {
+      throw new Error("Màu không hợp lệ");
+    }
+    color_key = input.color_key;
+  }
   await dbRun(
-    `UPDATE carriers SET code = ?, name = ?, active = ? WHERE id = ?`,
+    `UPDATE carriers SET code = ?, name = ?, active = ?, color_key = ? WHERE id = ?`,
     [
       input.code?.trim().toUpperCase() ?? existing.code,
       input.name?.trim() ?? existing.name,
       input.active !== undefined ? (input.active ? 1 : 0) : existing.active,
+      color_key,
       id,
     ]
   );
   return getCarrier(id);
+}
+
+export async function getCarrierColorNameMap(): Promise<Record<string, string>> {
+  const carriers = await listCarriers();
+  const map: Record<string, string> = {};
+  for (const c of carriers) {
+    const name = c.name?.trim();
+    if (name && c.color_key && isCarrierColorKey(c.color_key)) {
+      map[name] = c.color_key;
+    }
+  }
+  return map;
 }
 
 export async function regenerateCarrierToken(

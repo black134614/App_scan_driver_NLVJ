@@ -136,6 +136,36 @@ async function initSchema() {
     );
   }
 
+  const carrierColResult = await db.execute("PRAGMA table_info(carriers)");
+  const carrierColNames = (
+    carrierColResult.rows as unknown as { name: string }[]
+  ).map((c) => c.name);
+  if (!carrierColNames.includes("color_key")) {
+    await db.execute("ALTER TABLE carriers ADD COLUMN color_key TEXT");
+    const colorKeys = [
+      "slate",
+      "blue",
+      "emerald",
+      "amber",
+      "violet",
+      "rose",
+      "cyan",
+      "orange",
+    ];
+    const carrierRows = await db.execute(
+      "SELECT id FROM carriers ORDER BY id ASC"
+    );
+    const ids = (carrierRows.rows as unknown as { id: number }[]).map(
+      (r) => r.id
+    );
+    for (let i = 0; i < ids.length; i++) {
+      await db.execute("UPDATE carriers SET color_key = ? WHERE id = ?", [
+        colorKeys[i % colorKeys.length],
+        ids[i],
+      ]);
+    }
+  }
+
   await seedPortalLinks(db);
 }
 

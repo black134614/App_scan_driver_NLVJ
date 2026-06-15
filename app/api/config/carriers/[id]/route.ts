@@ -25,18 +25,25 @@ export async function PUT(
     return NextResponse.json({ error: "ID không hợp lệ" }, { status: 400 });
   }
 
-  let body: { code?: string; name?: string; active?: boolean };
+  let body: { code?: string; name?: string; active?: boolean; color_key?: string };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Body không hợp lệ" }, { status: 400 });
   }
 
-  const carrier = await updateCarrier(carrierId, body);
-  if (!carrier) {
-    return NextResponse.json({ error: "Không tìm thấy" }, { status: 404 });
+  try {
+    const carrier = await updateCarrier(carrierId, body);
+    if (!carrier) {
+      return NextResponse.json({ error: "Không tìm thấy" }, { status: 404 });
+    }
+    return NextResponse.json({ carrier });
+  } catch (e) {
+    return NextResponse.json(
+      { error: (e as Error).message },
+      { status: 400 }
+    );
   }
-  return NextResponse.json({ carrier });
 }
 
 export async function DELETE(
