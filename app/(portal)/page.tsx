@@ -1,11 +1,14 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import Button from "@/components/ui/Button";
+import PageHeader from "@/components/ui/PageHeader";
+import { SkeletonList } from "@/components/ui/Skeleton";
 import { todayDateString } from "@/lib/plan-parse";
+import { inputCls } from "@/lib/ui";
 import type { DriverTruckOption, SessionWithOrders } from "@/lib/types";
-import { formatCountdown, formatTime } from "@/lib/format";
+import { diffToNow, formatCountdown, formatTime } from "@/lib/format";
 
 const QrScanner = dynamic(() => import("@/components/QrScanner"), {
   ssr: false,
@@ -31,6 +34,8 @@ export default function DriverPage() {
   const [showWalkIn, setShowWalkIn] = useState(false);
   const [walkPlate, setWalkPlate] = useState("");
   const [walkDriver, setWalkDriver] = useState("");
+  const [trucksLoading, setTrucksLoading] = useState(true);
+  const [trucksError, setTrucksError] = useState<string | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showFlash = useCallback((f: NonNullable<Flash>) => {
@@ -40,15 +45,25 @@ export default function DriverPage() {
   }, []);
 
   const loadTrucks = useCallback(async () => {
+    setTrucksLoading(true);
+    setTrucksError(null);
     try {
       const date = todayDateString();
       const res = await fetch(`/api/plans/trucks?date=${date}`, {
         cache: "no-store",
       });
       const data = await res.json();
+      if (!res.ok) {
+        setTrucks([]);
+        setTrucksError(data.error ?? "Không tải được danh sách xe");
+        return;
+      }
       setTrucks(data.trucks ?? []);
     } catch {
       setTrucks([]);
+      setTrucksError("Lỗi kết nối — thử lại sau");
+    } finally {
+      setTrucksLoading(false);
     }
   }, []);
 
@@ -127,7 +142,8 @@ export default function DriverPage() {
 
   const handleOrderScan = useCallback(
     async (orderCode: string) => {
-      if (!session) return;
+      if (!session || busy) return;
+      setBusy(true);
       try {
         const res = await fetch(`/api/sessions/${session.id}/orders`, {
           method: "POST",
@@ -144,14 +160,19 @@ export default function DriverPage() {
         showFlash({ type: "success", text: `+ ${orderCode}` });
       } catch (e) {
         showFlash({ type: "error", text: (e as Error).message });
+      } finally {
+        setBusy(false);
       }
     },
-    [session, showFlash]
+    [session, busy, showFlash]
   );
+
+  const [deletingOrderId, setDeletingOrderId] = useState<number | null>(null);
 
   const deleteOrder = useCallback(
     async (orderId: number) => {
-      if (!session) return;
+      if (!session || deletingOrderId != null) return;
+      setDeletingOrderId(orderId);
       try {
         const res = await fetch(
           `/api/sessions/${session.id}/orders/${orderId}`,
@@ -163,9 +184,11 @@ export default function DriverPage() {
         showFlash({ type: "info", text: "Đã xóa đơn" });
       } catch (e) {
         showFlash({ type: "error", text: (e as Error).message });
+      } finally {
+        setDeletingOrderId(null);
       }
     },
-    [session, showFlash]
+    [session, deletingOrderId, showFlash]
   );
 
   const startExport = useCallback(async () => {
@@ -215,21 +238,15 @@ export default function DriverPage() {
   }, [loadTrucks]);
 
   return (
-    <main className="mx-auto flex w-full max-w-md flex-1 flex-col px-4 pb-10 pt-5">
-      <header className="mb-4 flex items-center justify-between">
-        <h1 className="text-lg font-bold text-slate-800">Xuất hàng</h1>
-        <Link
-          href="/dashboard"
-          className="rounded-full bg-slate-200 px-3 py-1 text-xs font-medium text-slate-600 active:bg-slate-300"
-        >
-          Dashboard
-        </Link>
-      </header>
+    <div className="flex flex-col pb-6">
+      <PageHeader title="Xuất hàng" description="Quét QR cổng và đơn hàng xuất" />
 
       <StepIndicator step={step} />
 
       {flash && (
         <div
+          role="alert"
+          aria-live="polite"
           className={`mb-3 rounded-xl px-4 py-3 text-sm font-semibold ${
             flash.type === "success"
               ? "bg-green-100 text-green-800"
@@ -247,7 +264,21 @@ export default function DriverPage() {
           <p className="text-center text-sm text-slate-600">
             Chọn xe từ <b>kế hoạch vận tải hôm nay</b>
           </p>
-          {trucks.length === 0 ? (
+          {trucksLoading ? (
+            <SkeletonList count={3} />
+          ) : trucksError ? (
+            <div className="rounded-xl bg-red-50 p-4 text-center text-sm text-red-700">
+              {trucksError}
+              <Button
+                variant="secondary"
+                size="sm"
+                className="mt-3"
+                onClick={loadTrucks}
+              >
+                Thử lại
+              </Button>
+            </div>
+          ) : trucks.length === 0 ? (
             <div className="rounded-xl bg-amber-50 p-4 text-center text-sm text-amber-800">
               Chưa có xe trong kế hoạch hôm nay. Bấm &quot;Đăng ký mới&quot; nếu
               bạn là xe phát sinh.
@@ -257,6 +288,7 @@ export default function DriverPage() {
               {trucks.map((t) => (
                 <li key={t.vehiclePlate}>
                   <button
+                    type="button"
                     onClick={() => selectTruck(t)}
                     className="w-full rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm active:bg-slate-50"
                   >
@@ -276,43 +308,50 @@ export default function DriverPage() {
             </ul>
           )}
           {!showWalkIn ? (
-            <button
+            <Button
+              variant="secondary"
+              className="w-full border-2 border-dashed border-blue-300 bg-transparent text-blue-700 hover:bg-blue-50"
               onClick={() => setShowWalkIn(true)}
-              className="rounded-xl border-2 border-dashed border-blue-300 py-3 text-sm font-semibold text-blue-700"
             >
               + Đăng ký mới (xe chưa có trong kế hoạch)
-            </button>
+            </Button>
           ) : (
             <div className="rounded-xl border border-slate-200 bg-white p-4">
               <h3 className="mb-3 font-bold text-slate-800">Đăng ký xe mới</h3>
               <div className="flex flex-col gap-2">
-                <input
-                  value={walkPlate}
-                  onChange={(e) => setWalkPlate(e.target.value.toUpperCase())}
-                  placeholder="Biển số xe *"
-                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm uppercase"
-                />
-                <input
-                  value={walkDriver}
-                  onChange={(e) => setWalkDriver(e.target.value)}
-                  placeholder="Tên tài xế (tùy chọn)"
-                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                />
+                <label className="text-sm font-semibold text-slate-600">
+                  Biển số xe *
+                  <input
+                    value={walkPlate}
+                    onChange={(e) => setWalkPlate(e.target.value.toUpperCase())}
+                    className={`mt-1 ${inputCls} uppercase`}
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-600">
+                  Tên tài xế (tùy chọn)
+                  <input
+                    value={walkDriver}
+                    onChange={(e) => setWalkDriver(e.target.value)}
+                    className={`mt-1 ${inputCls}`}
+                  />
+                </label>
               </div>
               <div className="mt-3 flex gap-2">
-                <button
+                <Button
                   onClick={registerWalkIn}
-                  disabled={busy}
-                  className="flex-1 rounded-lg bg-blue-600 py-2 text-sm font-semibold text-white disabled:bg-slate-300"
+                  loading={busy}
+                  loadingText="Đang đăng ký..."
+                  className="flex-1"
                 >
                   Xác nhận
-                </button>
-                <button
+                </Button>
+                <Button
                   onClick={() => setShowWalkIn(false)}
-                  className="rounded-lg bg-slate-200 px-4 py-2 text-sm font-semibold"
+                  variant="ghost"
+                  disabled={busy}
                 >
                   Hủy
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -324,23 +363,24 @@ export default function DriverPage() {
           <div className="rounded-xl bg-white p-3 shadow-sm text-sm">
             <p className="font-bold text-slate-800">{vehiclePlate}</p>
             <p className="text-slate-500">
-              {driverName || "Chưa có tài xế"} · Dự kiến {selected.expectedTime}{" "}
-              · {selected.gateCode}
+              {driverName || "Chưa có tài xế"} · Dự kiến{" "}
+              {selected.expectedTime ?? "—"} · {selected.gateCode ?? "—"}
             </p>
           </div>
           <p className="text-center text-sm text-slate-600">
             Đưa camera vào mã QR <b>cổng xuất hàng</b>
           </p>
           <QrScanner onResult={handleGateScan} paused={busy} />
-          <button
+          <Button
+            variant="ghost"
+            className="w-full"
             onClick={() => {
               setStep("select");
               setSelected(null);
             }}
-            className="rounded-xl bg-slate-200 py-3 font-semibold text-slate-600"
           >
             Quay lại chọn xe
-          </button>
+          </Button>
         </section>
       )}
 
@@ -351,6 +391,7 @@ export default function DriverPage() {
           onDelete={deleteOrder}
           onStart={startExport}
           busy={busy}
+          deletingOrderId={deletingOrderId}
         />
       )}
 
@@ -361,7 +402,7 @@ export default function DriverPage() {
       {step === "done" && session && (
         <DoneStep session={session} onReset={resetAll} />
       )}
-    </main>
+    </div>
   );
 }
 
@@ -403,12 +444,14 @@ function OrdersStep({
   onDelete,
   onStart,
   busy,
+  deletingOrderId,
 }: {
   session: SessionWithOrders;
   onScan: (code: string) => void;
   onDelete: (id: number) => void;
   onStart: () => void;
   busy: boolean;
+  deletingOrderId: number | null;
 }) {
   return (
     <section className="flex flex-col gap-4">
@@ -428,7 +471,7 @@ function OrdersStep({
       <p className="text-center text-sm text-slate-600">
         Quét mã QR <b>đơn hàng xuất thực tế</b> (kho)
       </p>
-      <QrScanner onResult={onScan} />
+      <QrScanner onResult={onScan} paused={busy} />
 
       <div className="rounded-xl bg-white p-3 shadow-sm">
         <div className="mb-2 flex items-center justify-between">
@@ -456,25 +499,32 @@ function OrdersStep({
                     {formatTime(o.scanned_at)}
                   </p>
                 </div>
-                <button
+                <Button
+                  variant="danger"
+                  size="sm"
                   onClick={() => onDelete(o.id)}
-                  className="ml-3 shrink-0 rounded-lg bg-red-100 px-3 py-1.5 text-sm font-semibold text-red-700 active:bg-red-200"
+                  loading={deletingOrderId === o.id}
+                  disabled={deletingOrderId != null}
                 >
                   Xóa
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
         )}
       </div>
 
-      <button
+      <Button
         onClick={onStart}
-        disabled={busy || session.orders_count === 0}
-        className="rounded-xl bg-green-600 py-4 text-base font-bold text-white shadow active:bg-green-700 disabled:bg-slate-300"
+        loading={busy}
+        loadingText="Đang xử lý..."
+        variant="success"
+        size="lg"
+        disabled={session.orders_count === 0}
+        className="w-full py-4 text-base shadow"
       >
         Bắt đầu xuất hàng (≈30 phút)
-      </button>
+      </Button>
     </section>
   );
 }
@@ -494,11 +544,10 @@ function ExportingStep({
     return () => clearInterval(t);
   }, []);
 
-  const target = session.export_estimated_at
-    ? new Date(session.export_estimated_at).getTime()
-    : now;
-  const remaining = Math.round((target - now) / 1000);
-  const overdue = remaining < 0;
+  const remaining = session.export_estimated_at
+    ? diffToNow(session.export_estimated_at, now)
+    : null;
+  const overdue = remaining != null && remaining < 0;
 
   return (
     <section className="flex flex-col items-center gap-5">
@@ -513,27 +562,37 @@ function ExportingStep({
 
       <div className="flex flex-col items-center gap-1">
         <span className="text-sm font-medium text-slate-500">
-          {overdue ? "Đã quá thời gian dự kiến" : "Dự kiến xong sau"}
+          {remaining == null
+            ? "Chưa có thời gian dự kiến"
+            : overdue
+              ? "Đã quá thời gian dự kiến"
+              : "Dự kiến xong sau"}
         </span>
         <span
-          className={`font-mono text-6xl font-bold tabular-nums ${
-            overdue ? "text-red-600" : "text-green-600"
+          className={`font-mono text-5xl font-bold tabular-nums sm:text-6xl ${
+            remaining == null
+              ? "text-slate-400"
+              : overdue
+                ? "text-red-600"
+                : "text-green-600"
           }`}
         >
-          {formatCountdown(remaining)}
+          {remaining == null ? "—" : formatCountdown(remaining)}
         </span>
         <span className="text-xs text-slate-400">
           Bắt đầu lúc {formatTime(session.export_started_at)}
         </span>
       </div>
 
-      <button
+      <Button
         onClick={onFinish}
-        disabled={busy}
-        className="w-full rounded-xl bg-blue-600 py-5 text-lg font-bold text-white shadow active:bg-blue-700 disabled:bg-slate-300"
+        loading={busy}
+        loadingText="Đang xử lý..."
+        size="lg"
+        className="w-full py-5 text-lg shadow"
       >
         Xuất xong
-      </button>
+      </Button>
     </section>
   );
 }
@@ -562,12 +621,9 @@ function DoneStep({
         <Row label="Bắt đầu xuất" value={formatTime(session.export_started_at)} />
         <Row label="Xuất xong" value={formatTime(session.export_finished_at)} />
       </div>
-      <button
-        onClick={onReset}
-        className="w-full rounded-xl bg-blue-600 py-4 font-bold text-white shadow active:bg-blue-700"
-      >
+      <Button onClick={onReset} size="lg" className="w-full py-4 text-lg shadow">
         Phiên mới
-      </button>
+      </Button>
     </section>
   );
 }

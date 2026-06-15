@@ -210,6 +210,8 @@ export interface PlanDayView {
   grid: PlanGrid;
   stats: PlanStats;
   queue: TruckQueueItem[];
+  gateCarriers: Record<string, string>;
+  gateNames: Record<string, string>;
 }
 
 export interface DriverTruckOption {

@@ -1,6 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import Button from "@/components/ui/Button";
+import PageHeader from "@/components/ui/PageHeader";
+import { SkeletonTable } from "@/components/ui/Skeleton";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type {
   AdminOrderInput,
   PageSize,
@@ -9,6 +12,7 @@ import type {
 } from "@/lib/types";
 import { PAGE_SIZE_OPTIONS } from "@/lib/types";
 import { formatDateTime } from "@/lib/format";
+import { inputCls } from "@/lib/ui";
 
 const STORAGE_KEY = "gate_admin_key";
 const ADMIN_HEADER = "x-admin-key";
@@ -69,6 +73,9 @@ export default function AdminPage() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [savingForm, setSavingForm] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const loadSeq = useRef(0);
 
   useEffect(() => {
     const saved = sessionStorage.getItem(STORAGE_KEY);
@@ -95,23 +102,27 @@ export default function AdminPage() {
 
   const loadSessions = useCallback(async () => {
     if (!adminKey) return;
+    const seq = ++loadSeq.current;
     setLoading(true);
     setError("");
     try {
       const data = await apiFetch(
         `/api/admin/sessions?page=${page}&limit=${limit}`
       );
+      if (seq !== loadSeq.current) return;
       setSessions(data.sessions ?? []);
       setTotal(data.total ?? 0);
       setTotalPages(data.totalPages ?? 1);
+      if (data.page) setPage(data.page);
     } catch (e) {
+      if (seq !== loadSeq.current) return;
       setError((e as Error).message);
       if ((e as Error).message.includes("quyền")) {
         sessionStorage.removeItem(STORAGE_KEY);
         setAdminKey(null);
       }
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [adminKey, apiFetch, page, limit]);
 
@@ -177,6 +188,7 @@ export default function AdminPage() {
   const saveForm = async () => {
     setError("");
     setMessage("");
+    setSavingForm(true);
     const payload = {
       driverName: form.driverName,
       vehiclePlate: form.vehiclePlate,
@@ -187,7 +199,6 @@ export default function AdminPage() {
       exportEstimatedAt: toIsoOrNull(form.exportEstimatedAt),
       exportFinishedAt: toIsoOrNull(form.exportFinishedAt),
       orders: form.orders.filter((o) => o.orderCode.trim()),
-      orderCodes: form.orders.map((o) => o.orderCode.trim()).filter(Boolean),
     };
 
     try {
@@ -208,18 +219,23 @@ export default function AdminPage() {
       loadSessions();
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setSavingForm(false);
     }
   };
 
   const deleteSession = async (id: number) => {
     if (!confirm(`Xóa phiên #${id}? Hành động không thể hoàn tác.`)) return;
     setError("");
+    setDeletingId(id);
     try {
       await apiFetch(`/api/admin/sessions/${id}`, { method: "DELETE" });
       setMessage(`Đã xóa phiên #${id}`);
       loadSessions();
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -246,31 +262,30 @@ export default function AdminPage() {
 
   if (!adminKey) {
     return (
-      <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center px-4 py-10">
+      <div className="mx-auto flex max-w-sm flex-col justify-center py-16">
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <h1 className="text-lg font-bold text-slate-800">Quản lý dữ liệu</h1>
           <p className="mt-1 text-sm text-slate-500">
             Trang ẩn — nhập mã PIN để truy cập
           </p>
-          <input
-            type="password"
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && login()}
-            placeholder="Mã PIN"
-            className="mt-4 w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-blue-500"
-          />
+          <label className="mt-4 block text-sm font-semibold text-slate-600">
+            Mã PIN
+            <input
+              type="password"
+              value={pin}
+              onChange={(e) => setPin(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && login()}
+              className={`mt-1 ${inputCls}`}
+            />
+          </label>
           {authError && (
             <p className="mt-2 text-sm text-red-600">{authError}</p>
           )}
-          <button
-            onClick={login}
-            className="mt-4 w-full rounded-xl bg-slate-800 py-3 font-semibold text-white active:bg-slate-900"
-          >
+          <Button onClick={login} className="mt-4 w-full" size="lg">
             Vào trang quản lý
-          </button>
+          </Button>
         </div>
-      </main>
+      </div>
     );
   }
 
@@ -278,31 +293,19 @@ export default function AdminPage() {
   const to = Math.min(page * limit, total);
 
   return (
-    <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-5 sm:px-6">
-      <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-extrabold text-slate-800">
-            Quản lý lịch sử (ẩn)
-          </h1>
-          <p className="text-sm text-slate-500">
-            Thêm · sửa · xóa phiên xuất hàng trong database
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={openCreate}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
-          >
-            + Thêm mới
-          </button>
-          <button
-            onClick={logout}
-            className="rounded-lg bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700"
-          >
-            Đăng xuất
-          </button>
-        </div>
-      </header>
+    <>
+      <PageHeader
+        title="Quản lý lịch sử (ẩn)"
+        description="Thêm · sửa · xóa phiên xuất hàng trong database"
+        actions={
+          <>
+            <Button onClick={openCreate}>+ Thêm mới</Button>
+            <Button onClick={logout} variant="ghost">
+              Đăng xuất
+            </Button>
+          </>
+        }
+      />
 
       {message && (
         <div className="mb-3 rounded-xl bg-green-100 px-4 py-2 text-sm font-medium text-green-800">
@@ -448,27 +451,23 @@ export default function AdminPage() {
           </div>
 
           <div className="mt-5 flex gap-2">
-            <button
+            <Button
               onClick={saveForm}
-              className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white"
+              loading={savingForm}
+              loadingText="Đang lưu..."
             >
               Lưu
-            </button>
-            <button
-              onClick={closeForm}
-              className="rounded-lg bg-slate-200 px-5 py-2 text-sm font-semibold text-slate-700"
-            >
+            </Button>
+            <Button onClick={closeForm} variant="ghost" disabled={savingForm}>
               Hủy
-            </button>
+            </Button>
           </div>
         </div>
       )}
 
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
         {loading ? (
-          <div className="py-16 text-center text-sm text-slate-400">
-            Đang tải...
-          </div>
+          <SkeletonTable rows={8} cols={8} />
         ) : sessions.length === 0 ? (
           <div className="py-16 text-center text-sm text-slate-400">
             Chưa có dữ liệu
@@ -502,18 +501,23 @@ export default function AdminPage() {
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
-                        <button
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="bg-amber-100 text-amber-800"
                           onClick={() => openEdit(s)}
-                          className="rounded bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800"
                         >
                           Sửa
-                        </button>
-                        <button
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger"
                           onClick={() => deleteSession(s.id)}
-                          className="rounded bg-red-100 px-2 py-1 text-xs font-semibold text-red-700"
+                          loading={deletingId === s.id}
+                          disabled={deletingId != null}
                         >
                           Xóa
-                        </button>
+                        </Button>
                       </div>
                     </td>
                   </tr>
@@ -525,59 +529,63 @@ export default function AdminPage() {
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-4 py-3">
           <div className="flex items-center gap-2 text-sm text-slate-600">
-            <span>Hiển thị</span>
-            <select
-              value={limit}
-              onChange={(e) => {
-                setLimit(Number(e.target.value) as PageSize);
-                setPage(1);
-              }}
-              className="rounded-lg border border-slate-300 px-2 py-1 text-sm"
-            >
+            <label className="flex items-center gap-2">
+              <span>Hiển thị</span>
+              <select
+                value={limit}
+                onChange={(e) => {
+                  setLimit(Number(e.target.value) as PageSize);
+                  setPage(1);
+                }}
+                className={inputCls}
+                style={{ width: "auto" }}
+              >
               {PAGE_SIZE_OPTIONS.map((size) => (
                 <option key={size} value={size}>
                   {size}
                 </option>
               ))}
             </select>
+            </label>
             <span>
               · {from}–{to} / {total}
             </span>
           </div>
           <div className="flex items-center gap-1">
-            <button
-              disabled={page <= 1}
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={page <= 1 || loading}
               onClick={() => setPage((p) => p - 1)}
-              className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-40"
+              aria-label="Trang trước"
             >
               ‹
-            </button>
+            </Button>
             <span className="px-2 text-sm">
               {page} / {totalPages}
             </span>
-            <button
-              disabled={page >= totalPages}
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={page >= totalPages || loading}
               onClick={() => setPage((p) => p + 1)}
-              className="rounded border border-slate-300 px-3 py-1 text-sm disabled:opacity-40"
+              aria-label="Trang sau"
             >
               ›
-            </button>
+            </Button>
           </div>
         </div>
       </div>
-    </main>
+    </>
   );
 }
-
-const inputCls =
-  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500";
 
 function Field({
   label,
   children,
 }: {
   label: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <label className="flex flex-col gap-1">

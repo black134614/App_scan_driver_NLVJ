@@ -1,7 +1,7 @@
 "use client";
 
 import type { SessionWithOrders } from "@/lib/types";
-import { formatCountdown, formatTime } from "@/lib/format";
+import { diffToNow, formatCountdown, formatTime } from "@/lib/format";
 
 interface GateCardProps {
   gateCode: string;
@@ -13,13 +13,12 @@ export default function GateCard({ gateCode, session, nowMs }: GateCardProps) {
   const isExporting = session?.status === "exporting";
   const isScanning = session?.status === "scanning";
 
+  const hasEstimate = Boolean(session?.export_estimated_at);
   const remaining =
-    isExporting && session?.export_estimated_at
-      ? Math.round(
-          (new Date(session.export_estimated_at).getTime() - nowMs) / 1000
-        )
-      : 0;
-  const overdue = remaining < 0;
+    isExporting && hasEstimate
+      ? diffToNow(session!.export_estimated_at, nowMs)
+      : null;
+  const overdue = remaining != null && remaining < 0;
 
   const borderColor = !session
     ? "border-slate-200"
@@ -69,18 +68,30 @@ export default function GateCard({ gateCode, session, nowMs }: GateCardProps) {
           {isExporting && (
             <div
               className={`rounded-xl px-3 py-2 text-center ${
-                overdue ? "bg-red-50" : "bg-green-50"
+                !hasEstimate
+                  ? "bg-slate-50"
+                  : overdue
+                    ? "bg-red-50"
+                    : "bg-green-50"
               }`}
             >
               <p className="text-xs text-slate-500">
-                {overdue ? "Quá giờ" : "Còn lại"}
+                {!hasEstimate
+                  ? "Chưa có TG dự kiến"
+                  : overdue
+                    ? "Quá giờ"
+                    : "Còn lại"}
               </p>
               <p
                 className={`font-mono text-3xl font-bold tabular-nums ${
-                  overdue ? "text-red-600" : "text-green-600"
+                  !hasEstimate
+                    ? "text-slate-400"
+                    : overdue
+                      ? "text-red-600"
+                      : "text-green-600"
                 }`}
               >
-                {formatCountdown(remaining)}
+                {remaining == null ? "—" : formatCountdown(remaining)}
               </p>
             </div>
           )}

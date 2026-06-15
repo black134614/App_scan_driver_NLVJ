@@ -1,9 +1,11 @@
 "use client";
 
-import AppNav from "@/components/AppNav";
-import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import Button from "@/components/ui/Button";
+import PageHeader from "@/components/ui/PageHeader";
+import { SkeletonCards, SkeletonTable } from "@/components/ui/Skeleton";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import GateCard from "@/components/GateCard";
+import { inputCls, tableHeadCls, tableRowHoverCls } from "@/lib/ui";
 import type {
   FilterOptions,
   PageSize,
@@ -34,11 +36,32 @@ const STATUS_LABELS: Record<string, string> = {
   done: "Hoàn thành",
 };
 
+function buildFilterParams(
+  applied: Filters,
+  page: number,
+  limit: number
+): URLSearchParams {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+  });
+  if (applied.gate) params.set("gate", applied.gate);
+  if (applied.driver) params.set("driver", applied.driver);
+  if (applied.orderCode) params.set("orderCode", applied.orderCode);
+  if (applied.exportDate) params.set("exportDate", applied.exportDate);
+  return params;
+}
+
+function filtersActive(f: Filters): boolean {
+  return Boolean(f.gate || f.driver || f.orderCode || f.exportDate);
+}
+
 export default function DashboardPage() {
   const [sessions, setSessions] = useState<SessionWithOrders[]>([]);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [pollError, setPollError] = useState<string | null>(null);
+  const [pollLoading, setPollLoading] = useState(true);
 
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [appliedFilters, setAppliedFilters] = useState<Filters>(EMPTY_FILTERS);
@@ -53,7 +76,13 @@ export default function DashboardPage() {
     drivers: [],
   });
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [filterApplying, setFilterApplying] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [hasLoadedHistory, setHasLoadedHistory] = useState(false);
+
+  const historySeq = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -62,11 +91,17 @@ export default function DashboardPage() {
         const res = await fetch("/api/sessions", { cache: "no-store" });
         const data = await res.json();
         if (!active) return;
+        if (!res.ok) {
+          setPollError(data.error ?? "Không tải được dữ liệu cổng");
+          return;
+        }
         setSessions(data.sessions ?? []);
         setLastUpdated(Date.now());
-        setError(null);
+        setPollError(null);
       } catch {
-        if (active) setError("Không kết nối được máy chủ");
+        if (active) setPollError("Không kết nối được máy chủ");
+      } finally {
+        if (active) setPollLoading(false);
       }
     };
     load();
@@ -78,32 +113,37 @@ export default function DashboardPage() {
   }, []);
 
   const loadHistory = useCallback(async () => {
+    const seq = ++historySeq.current;
     setHistoryLoading(true);
     try {
-      const params = new URLSearchParams({
-        page: String(page),
-        limit: String(limit),
-      });
-      if (appliedFilters.gate) params.set("gate", appliedFilters.gate);
-      if (appliedFilters.driver) params.set("driver", appliedFilters.driver);
-      if (appliedFilters.orderCode)
-        params.set("orderCode", appliedFilters.orderCode);
-      if (appliedFilters.exportDate)
-        params.set("exportDate", appliedFilters.exportDate);
-
+      const params = buildFilterParams(appliedFilters, page, limit);
       const res = await fetch(`/api/sessions?${params.toString()}`, {
         cache: "no-store",
       });
       const data = await res.json();
+      if (seq !== historySeq.current) return;
+      if (!res.ok) {
+        setHistoryError(data.error ?? "Không tải được lịch sử");
+        return;
+      }
       setHistory(data.sessions ?? []);
       setHistoryTotal(data.total ?? 0);
       setHistoryTotalPages(data.totalPages ?? 1);
-      setHistoryPage(data.page ?? 1);
+      const apiPage = data.page ?? 1;
+      setHistoryPage(apiPage);
+      setPage(apiPage);
       setFilterOptions(data.filterOptions ?? { gates: [], drivers: [] });
+      setHistoryError(null);
+      setHasLoadedHistory(true);
     } catch {
-      setError("Không tải được lịch sử");
+      if (seq === historySeq.current) {
+        setHistoryError("Không tải được lịch sử");
+      }
     } finally {
-      setHistoryLoading(false);
+      if (seq === historySeq.current) {
+        setHistoryLoading(false);
+        setFilterApplying(false);
+      }
     }
   }, [page, limit, appliedFilters]);
 
@@ -117,6 +157,7 @@ export default function DashboardPage() {
   }, []);
 
   const applyFilters = () => {
+    setFilterApplying(true);
     setAppliedFilters({ ...filters });
     setPage(1);
   };
@@ -129,14 +170,11 @@ export default function DashboardPage() {
 
   const exportExcel = async () => {
     setExporting(true);
+    setExportError(null);
     try {
-      const params = new URLSearchParams();
-      if (appliedFilters.gate) params.set("gate", appliedFilters.gate);
-      if (appliedFilters.driver) params.set("driver", appliedFilters.driver);
-      if (appliedFilters.orderCode)
-        params.set("orderCode", appliedFilters.orderCode);
-      if (appliedFilters.exportDate)
-        params.set("exportDate", appliedFilters.exportDate);
+      const params = buildFilterParams(appliedFilters, 1, limit);
+      params.delete("page");
+      params.delete("limit");
 
       const res = await fetch(`/api/sessions/export?${params.toString()}`);
       if (!res.ok) throw new Error("Xuất file thất bại");
@@ -146,48 +184,53 @@ export default function DashboardPage() {
       const a = document.createElement("a");
       a.href = url;
       a.download = `xuat-hang-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch {
-      setError("Không xuất được file Excel");
+      setExportError("Không xuất được file Excel");
     } finally {
       setExporting(false);
     }
   };
 
-  const { gates, activeSessions, doneToday, totalOrders } = useMemo(() => {
-    const todayStr = new Date().toLocaleDateString("vi-VN");
-    const active = sessions.filter((s) => s.status !== "done");
-    const done = sessions.filter((s) => {
-      if (s.status !== "done") return false;
-      const d = s.export_finished_at ? new Date(s.export_finished_at) : null;
-      return d && d.toLocaleDateString("vi-VN") === todayStr;
-    });
+  const { gates, activeSessions, doneToday, totalOrders, uniqueActiveGates } =
+    useMemo(() => {
+      const todayStr = new Date().toLocaleDateString("vi-VN");
+      const active = sessions.filter((s) => s.status !== "done");
+      const done = sessions.filter((s) => {
+        if (s.status !== "done") return false;
+        const d = s.export_finished_at ? new Date(s.export_finished_at) : null;
+        return d && d.toLocaleDateString("vi-VN") === todayStr;
+      });
 
-    const gateMap = new Map<string, SessionWithOrders | null>();
-    for (const s of sessions) {
-      if (!gateMap.has(s.gate_code)) gateMap.set(s.gate_code, null);
-    }
-    for (const s of active) {
-      const cur = gateMap.get(s.gate_code);
-      if (!cur || new Date(s.created_at) > new Date(cur.created_at)) {
-        gateMap.set(s.gate_code, s);
+      const gateMap = new Map<string, SessionWithOrders | null>();
+      for (const s of sessions) {
+        if (!gateMap.has(s.gate_code)) gateMap.set(s.gate_code, null);
       }
-    }
+      for (const s of active) {
+        const cur = gateMap.get(s.gate_code);
+        if (!cur || new Date(s.created_at) > new Date(cur.created_at)) {
+          gateMap.set(s.gate_code, s);
+        }
+      }
 
-    const gateList = Array.from(gateMap.entries())
-      .map(([gateCode, session]) => ({ gateCode, session }))
-      .sort((a, b) => a.gateCode.localeCompare(b.gateCode));
+      const gateList = Array.from(gateMap.entries())
+        .map(([gateCode, session]) => ({ gateCode, session }))
+        .sort((a, b) => a.gateCode.localeCompare(b.gateCode));
 
-    const orders = active.reduce((sum, s) => sum + s.orders_count, 0);
+      const orders = active.reduce((sum, s) => sum + s.orders_count, 0);
+      const uniqueGates = new Set(active.map((s) => s.gate_code)).size;
 
-    return {
-      gates: gateList,
-      activeSessions: active,
-      doneToday: done,
-      totalOrders: orders,
-    };
-  }, [sessions]);
+      return {
+        gates: gateList,
+        activeSessions: active,
+        doneToday: done,
+        totalOrders: orders,
+        uniqueActiveGates: uniqueGates,
+      };
+    }, [sessions]);
 
   const exportingCount = activeSessions.filter(
     (s) => s.status === "exporting"
@@ -196,31 +239,30 @@ export default function DashboardPage() {
   const from = historyTotal === 0 ? 0 : (historyPage - 1) * limit + 1;
   const to = Math.min(historyPage * limit, historyTotal);
 
+  const historyEmptyMessage = !hasLoadedHistory
+    ? "Đang tải..."
+    : filtersActive(appliedFilters)
+      ? "Không có dữ liệu phù hợp bộ lọc"
+      : "Chưa có phiên xuất hàng nào";
+
   return (
-    <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-5 sm:px-6">
-      <AppNav />
-      <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-extrabold text-slate-800">
-            Bảng theo dõi cổng xuất hàng
-          </h1>
-          <p className="text-sm text-slate-500">
-            {lastUpdated
-              ? `Cập nhật lúc ${formatTime(new Date(lastUpdated).toISOString())} · tự làm mới mỗi ${POLL_INTERVAL_MS / 1000}s`
-              : "Đang tải..."}
-            {error && <span className="ml-2 text-red-600">· {error}</span>}
-          </p>
+    <>
+      <PageHeader
+        title="Bảng theo dõi cổng xuất hàng"
+        description={
+          lastUpdated
+            ? `Cập nhật lúc ${formatTime(new Date(lastUpdated).toISOString())} · tự làm mới mỗi ${POLL_INTERVAL_MS / 1000}s`
+            : "Đang tải..."
+        }
+      />
+      {(pollError || historyError || exportError) && (
+        <div className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+          {[pollError, historyError, exportError].filter(Boolean).join(" · ")}
         </div>
-        <Link
-          href="/"
-          className="rounded-full bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow active:bg-blue-700"
-        >
-          Trang tài xế
-        </Link>
-      </header>
+      )}
 
       <section className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Stat label="Cổng đang dùng" value={activeSessions.length} accent="amber" />
+        <Stat label="Cổng đang dùng" value={uniqueActiveGates} accent="amber" />
         <Stat label="Đang xuất hàng" value={exportingCount} accent="green" />
         <Stat label="Tổng đơn đang xử lý" value={totalOrders} accent="blue" />
         <Stat label="Hoàn thành hôm nay" value={doneToday.length} accent="slate" />
@@ -230,7 +272,9 @@ export default function DashboardPage() {
         <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-500">
           Cổng & xe
         </h2>
-        {gates.length === 0 ? (
+        {pollLoading ? (
+          <SkeletonCards count={4} />
+        ) : gates.length === 0 ? (
           <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-white py-16 text-center text-slate-400">
             Chưa có cổng nào được quét. Dữ liệu sẽ hiện khi tài xế bắt đầu.
           </div>
@@ -253,13 +297,15 @@ export default function DashboardPage() {
           <h2 className="text-sm font-bold uppercase tracking-wide text-slate-500">
             Lịch sử xuất hàng
           </h2>
-          <button
+          <Button
             onClick={exportExcel}
-            disabled={exporting || historyTotal === 0}
-            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow active:bg-emerald-700 disabled:bg-slate-300"
+            variant="success"
+            disabled={historyTotal === 0}
+            loading={exporting}
+            loadingText="Đang xuất..."
           >
-            {exporting ? "Đang xuất..." : "Xuất Excel"}
-          </button>
+            Xuất Excel
+          </Button>
         </div>
 
         <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -268,9 +314,11 @@ export default function DashboardPage() {
               <input
                 list="gate-options"
                 value={filters.gate}
-                onChange={(e) => setFilters((f) => ({ ...f, gate: e.target.value }))}
+                onChange={(e) =>
+                  setFilters((f) => ({ ...f, gate: e.target.value }))
+                }
                 placeholder="GATE-01"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                className={inputCls}
               />
               <datalist id="gate-options">
                 {filterOptions.gates.map((g) => (
@@ -282,9 +330,11 @@ export default function DashboardPage() {
               <input
                 list="driver-options"
                 value={filters.driver}
-                onChange={(e) => setFilters((f) => ({ ...f, driver: e.target.value }))}
+                onChange={(e) =>
+                  setFilters((f) => ({ ...f, driver: e.target.value }))
+                }
                 placeholder="Nguyễn Văn A"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                className={inputCls}
               />
               <datalist id="driver-options">
                 {filterOptions.drivers.map((d) => (
@@ -299,7 +349,7 @@ export default function DashboardPage() {
                   setFilters((f) => ({ ...f, orderCode: e.target.value }))
                 }
                 placeholder="DH-2026-0001"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                className={inputCls}
               />
             </FilterField>
             <FilterField label="Ngày xuất">
@@ -309,39 +359,35 @@ export default function DashboardPage() {
                 onChange={(e) =>
                   setFilters((f) => ({ ...f, exportDate: e.target.value }))
                 }
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                className={inputCls}
               />
             </FilterField>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
-            <button
+            <Button
               onClick={applyFilters}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white active:bg-blue-700"
+              loading={filterApplying}
+              loadingText="Đang lọc..."
             >
               Lọc
-            </button>
-            <button
-              onClick={resetFilters}
-              className="rounded-lg bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 active:bg-slate-300"
-            >
+            </Button>
+            <Button onClick={resetFilters} variant="ghost">
               Xóa bộ lọc
-            </button>
+            </Button>
           </div>
         </div>
 
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-          {historyLoading ? (
-            <div className="py-16 text-center text-sm text-slate-400">
-              Đang tải...
-            </div>
+          {historyLoading && !hasLoadedHistory ? (
+            <SkeletonTable rows={8} cols={7} />
           ) : history.length === 0 ? (
             <div className="py-16 text-center text-sm text-slate-400">
-              Không có dữ liệu phù hợp bộ lọc
+              {historyEmptyMessage}
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full min-w-[720px] text-left text-sm">
-                <thead className="bg-slate-50 text-xs uppercase text-slate-400">
+                <thead className={tableHeadCls}>
                   <tr>
                     <th className="px-4 py-2">Cổng</th>
                     <th className="px-4 py-2">Biển số</th>
@@ -354,7 +400,7 @@ export default function DashboardPage() {
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {history.map((s) => (
-                    <tr key={s.id} className="text-slate-700">
+                    <tr key={s.id} className={`text-slate-700 ${tableRowHoverCls}`}>
                       <td className="px-4 py-2 font-semibold">{s.gate_code}</td>
                       <td className="px-4 py-2 font-bold">{s.vehicle_plate}</td>
                       <td className="px-4 py-2">{s.driver_name}</td>
@@ -390,21 +436,24 @@ export default function DashboardPage() {
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-4 py-3">
             <div className="flex items-center gap-2 text-sm text-slate-600">
-              <span>Hiển thị</span>
-              <select
-                value={limit}
-                onChange={(e) => {
-                  setLimit(Number(e.target.value) as PageSize);
-                  setPage(1);
-                }}
-                className="rounded-lg border border-slate-300 px-2 py-1 text-sm outline-none focus:border-blue-500"
-              >
-                {PAGE_SIZE_OPTIONS.map((size) => (
-                  <option key={size} value={size}>
-                    {size}
-                  </option>
-                ))}
-              </select>
+              <label className="flex items-center gap-2">
+                <span>Hiển thị</span>
+                <select
+                  value={limit}
+                  onChange={(e) => {
+                    setLimit(Number(e.target.value) as PageSize);
+                    setPage(1);
+                  }}
+                  className={inputCls}
+                  style={{ width: "auto" }}
+                >
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <option key={size} value={size}>
+                      {size}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <span>
                 · {from}–{to} / {historyTotal} phiên
               </span>
@@ -412,8 +461,9 @@ export default function DashboardPage() {
 
             <div className="flex items-center gap-1">
               <PageButton
-                disabled={historyPage <= 1}
+                disabled={historyPage <= 1 || historyLoading}
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
+                ariaLabel="Trang trước"
               >
                 ‹
               </PageButton>
@@ -421,10 +471,11 @@ export default function DashboardPage() {
                 Trang {historyPage} / {historyTotalPages}
               </span>
               <PageButton
-                disabled={historyPage >= historyTotalPages}
+                disabled={historyPage >= historyTotalPages || historyLoading}
                 onClick={() =>
                   setPage((p) => Math.min(historyTotalPages, p + 1))
                 }
+                ariaLabel="Trang sau"
               >
                 ›
               </PageButton>
@@ -432,7 +483,7 @@ export default function DashboardPage() {
           </div>
         </div>
       </section>
-    </main>
+    </>
   );
 }
 
@@ -470,15 +521,19 @@ function PageButton({
   children,
   disabled,
   onClick,
+  ariaLabel,
 }: {
   children: React.ReactNode;
   disabled: boolean;
   onClick: () => void;
+  ariaLabel: string;
 }) {
   return (
     <button
+      type="button"
       disabled={disabled}
       onClick={onClick}
+      aria-label={ariaLabel}
       className="rounded-lg border border-slate-300 px-3 py-1 text-sm font-semibold text-slate-700 disabled:opacity-40 active:bg-slate-100"
     >
       {children}

@@ -1,5 +1,5 @@
 import { dbAll, dbGet, dbRun } from "./db";
-import { getCarrierGates } from "./config";
+import { getCarrier, getCarrierGates, getGateCarrierNameMap, getGateNameMap } from "./config";
 import {
   getAvailableSlotsForCarrier,
   getOccupiedSlotMinutes,
@@ -445,12 +445,33 @@ export async function getPlanDayView(
   const orders = await listPlanOrdersByDate(date, carrierId);
   const allSessions = await listSessions();
   const sessions = sessionsForDate(allSessions, date);
+  const grid = buildGridWithStatus(orders, sessions);
+  const gateCarriers = await getGateCarrierNameMap();
+  const gateNames = await getGateNameMap();
+
+  for (const order of orders) {
+    if (order.carrier_id && !gateCarriers[order.gate_code]) {
+      const carrier = await getCarrier(order.carrier_id);
+      if (carrier) gateCarriers[order.gate_code] = carrier.name;
+    }
+  }
+
+  if (carrierId) {
+    const carrier = await getCarrier(carrierId);
+    const label = carrier?.name ?? "—";
+    for (const gate of grid.gates) {
+      gateCarriers[gate] = label;
+    }
+  }
+
   return {
     date,
     orders,
-    grid: buildGridWithStatus(orders, sessions),
+    grid,
     stats: computeStats(orders, sessions),
     queue: buildTruckQueue(orders, sessions),
+    gateCarriers,
+    gateNames,
   };
 }
 

@@ -1,11 +1,16 @@
 "use client";
 
-import AppNav from "@/components/AppNav";
+import Button from "@/components/ui/Button";
+import Modal from "@/components/ui/Modal";
+import PageHeader from "@/components/ui/PageHeader";
+import { SkeletonTable } from "@/components/ui/Skeleton";
 import { isPastDate } from "@/lib/access-shared";
 import { isGateOpenOnDate } from "@/lib/gate-weekdays";
 import { parseSheetRows, todayDateString } from "@/lib/plan-parse";
-import type { GateRow, PlanOrderRow, PortalRole, TimeSlot } from "@/lib/types";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePortal } from "@/lib/portal-context";
+import { inputCls, tableHeadCls, tableRowHoverCls } from "@/lib/ui";
+import type { GateRow, PlanOrderRow, TimeSlot } from "@/lib/types";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 interface PreviewRow {
   rowNumber: number;
@@ -58,8 +63,6 @@ function buildStagingGroups(rows: PreviewRow[]): StagingGroup[] {
   return Array.from(map.values());
 }
 
-const inputCls =
-  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500";
 
 export default function KeHoachPage() {
   const [planDate, setPlanDate] = useState(todayDateString());
@@ -87,19 +90,60 @@ export default function KeHoachPage() {
   ]);
 
   const [editing, setEditing] = useState<PlanOrderRow | null>(null);
-  const [role, setRole] = useState<PortalRole>("anonymous");
+  const [editTonnageStr, setEditTonnageStr] = useState("");
+  const { role, ready: portalReady } = usePortal();
   const [gates, setGates] = useState<GateRow[]>([]);
   const [manualGateId, setManualGateId] = useState<number | "">("");
   const [slots, setSlots] = useState<TimeSlot[]>([]);
+  const [editSlots, setEditSlots] = useState<TimeSlot[]>([]);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [savingManual, setSavingManual] = useState(false);
+
+  const manualSlotSeq = useRef(0);
+  const editSlotSeq = useRef(0);
 
   const canEdit =
-    role === "warehouse" ||
-    (role === "carrier" && !isPastDate(planDate));
+    portalReady &&
+    (role === "warehouse" ||
+      (role === "carrier" && !isPastDate(planDate)));
 
   const openGates = useMemo(
     () => gates.filter((g) => isGateOpenOnDate(g, planDate)),
     [gates, planDate]
   );
+
+  const gateNameByCode = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const g of gates) {
+      map[g.code] = g.name?.trim() || g.code;
+    }
+    return map;
+  }, [gates]);
+
+  const editOpenGates = useMemo(() => {
+    if (!editing) return [];
+    return gates.filter((g) => isGateOpenOnDate(g, editing.plan_date));
+  }, [gates, editing]);
+
+  const editGateOptions = useMemo(() => {
+    if (!editing) return editOpenGates;
+    const current = gates.find((g) => g.code === editing.gate_code);
+    if (current && !editOpenGates.some((g) => g.id === current.id)) {
+      return [current, ...editOpenGates];
+    }
+    return editOpenGates;
+  }, [editOpenGates, editing, gates]);
+
+  const editTimeOptions = useMemo(() => {
+    if (!editing?.expected_time) return editSlots;
+    if (editSlots.some((s) => s.label === editing.expected_time)) {
+      return editSlots;
+    }
+    return [
+      { minutes: editing.expected_minutes, label: editing.expected_time },
+      ...editSlots,
+    ];
+  }, [editSlots, editing]);
 
   const loadGates = useCallback(async () => {
     try {
@@ -112,12 +156,30 @@ export default function KeHoachPage() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/me", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d) => setRole(d.role ?? "anonymous"))
-      .catch(() => {});
     loadGates();
   }, [loadGates]);
+
+  useEffect(() => {
+    if (editing) {
+      setEditTonnageStr(
+        editing.tonnage != null ? String(editing.tonnage) : ""
+      );
+    }
+  }, [editing?.id, editing?.tonnage]);
+
+  useEffect(() => {
+    setPreview([]);
+    setStaging([]);
+    setSelectedFileName("");
+    setCarrierFileName("");
+    setManualLines([{ orderCode: "", tonnage: "" }]);
+    setManualGate("");
+    setManualTime("");
+    setManualPlate("");
+    setManualDriver("");
+    setManualGateId("");
+    setMessage("");
+  }, [planDate]);
 
   useEffect(() => {
     if (manualGateId && !openGates.some((g) => g.id === manualGateId)) {
@@ -132,6 +194,7 @@ export default function KeHoachPage() {
       setSlots([]);
       return;
     }
+    const seq = ++manualSlotSeq.current;
     const params = new URLSearchParams({
       date: planDate,
       gateId: String(manualGateId),
@@ -140,10 +203,48 @@ export default function KeHoachPage() {
     fetch(`/api/plans/slots?${params}`)
       .then((r) => r.json())
       .then((d) => {
+        if (seq !== manualSlotSeq.current) return;
         setSlots(d.slots ?? []);
       })
-      .catch(() => setSlots([]));
+      .catch(() => {
+        if (seq === manualSlotSeq.current) setSlots([]);
+      });
   }, [manualGateId, planDate, manualPlate, canEdit]);
+
+  useEffect(() => {
+    if (!editing || gates.length === 0) {
+      setEditSlots([]);
+      return;
+    }
+    const gate = gates.find((g) => g.code === editing.gate_code);
+    if (!gate) {
+      setEditSlots([]);
+      return;
+    }
+    const params = new URLSearchParams({
+      date: editing.plan_date,
+      gateId: String(gate.id),
+    });
+    if (editing.vehicle_plate) {
+      params.set("excludePlate", editing.vehicle_plate);
+    }
+    const seq = ++editSlotSeq.current;
+    fetch(`/api/plans/slots?${params}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (seq !== editSlotSeq.current) return;
+        setEditSlots(d.slots ?? []);
+      })
+      .catch(() => {
+        if (seq === editSlotSeq.current) setEditSlots([]);
+      });
+  }, [
+    editing?.id,
+    editing?.gate_code,
+    editing?.plan_date,
+    editing?.vehicle_plate,
+    gates,
+  ]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -157,6 +258,7 @@ export default function KeHoachPage() {
       setOrders(data.orders ?? []);
     } catch (e) {
       setError((e as Error).message);
+      setOrders([]);
     } finally {
       setLoading(false);
     }
@@ -349,6 +451,7 @@ export default function KeHoachPage() {
       setError("Cần cổng, giờ và ít nhất 1 đơn/lệnh");
       return;
     }
+    setSavingManual(true);
     try {
       const res = await fetch("/api/plans", {
         method: "POST",
@@ -372,58 +475,78 @@ export default function KeHoachPage() {
       load();
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setSavingManual(false);
     }
   };
 
   const deleteOrder = async (id: number) => {
     if (!confirm("Xóa dòng kế hoạch này?")) return;
-    await fetch(`/api/plans/${id}`, { method: "DELETE" });
-    load();
+    try {
+      const res = await fetch(`/api/plans/${id}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Không xóa được");
+      setMessage("Đã xóa dòng kế hoạch");
+      load();
+    } catch (e) {
+      setError((e as Error).message);
+    }
   };
 
   const saveEdit = async () => {
     if (!editing) return;
-    const res = await fetch(`/api/plans/${editing.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        planDate: editing.plan_date,
-        gateCode: editing.gate_code,
-        expectedTime: editing.expected_time,
-        orderCode: editing.order_code,
-        tonnage: editing.tonnage,
-        vehiclePlate: editing.vehicle_plate,
-        driverName: editing.driver_name,
-      }),
-    });
-    if (res.ok) {
+    setSavingEdit(true);
+    setError("");
+    const tonnageParsed = editTonnageStr.trim()
+      ? Number(editTonnageStr.replace(",", "."))
+      : null;
+    const tonnage =
+      tonnageParsed != null && !Number.isNaN(tonnageParsed)
+        ? tonnageParsed
+        : null;
+    try {
+      const res = await fetch(`/api/plans/${editing.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          planDate: editing.plan_date,
+          gateCode: editing.gate_code,
+          expectedTime: editing.expected_time,
+          orderCode: editing.order_code,
+          tonnage,
+          vehiclePlate: editing.vehicle_plate,
+          driverName: editing.driver_name,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi lưu");
       setEditing(null);
+      setMessage("Đã cập nhật dòng kế hoạch");
       load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSavingEdit(false);
     }
   };
 
   return (
-    <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-5 sm:px-6">
-      <AppNav />
-      <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-extrabold text-slate-800">
-            Kế hoạch vận tải
-          </h1>
-          <p className="text-sm text-slate-500">
-            Import Excel hoặc nhập tay — mỗi dòng = 1 đơn/lệnh
-          </p>
-        </div>
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="font-semibold text-slate-600">Ngày kế hoạch</span>
-          <input
-            type="date"
-            value={planDate}
-            onChange={(e) => setPlanDate(e.target.value)}
-            className={inputCls}
-          />
-        </label>
-      </header>
+    <>
+      <PageHeader
+        title="Kế hoạch vận tải"
+        description="Import Excel hoặc nhập tay — mỗi dòng = 1 đơn/lệnh"
+        actions={
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="font-semibold text-slate-600">Ngày kế hoạch</span>
+            <input
+              type="date"
+              value={planDate}
+              onChange={(e) => setPlanDate(e.target.value)}
+              className={inputCls}
+            />
+          </label>
+        }
+      />
 
       {message && (
         <div className="mb-3 rounded-xl bg-green-100 px-4 py-2 text-sm text-green-800">
@@ -538,25 +661,30 @@ export default function KeHoachPage() {
                 </table>
               </div>
               <div className="flex flex-col gap-2 sm:flex-row">
-                <button
+                <Button
                   type="button"
                   onClick={saveImport}
+                  variant="success"
+                  size="lg"
+                  loading={importing}
+                  loadingText="Đang import..."
                   disabled={
-                    importing ||
                     preview.filter((r) => r.errors.length === 0).length === 0
                   }
-                  className="flex-1 rounded-xl bg-emerald-600 px-6 py-3.5 text-base font-bold text-white shadow-md hover:bg-emerald-700 disabled:bg-slate-300"
+                  className="flex-1 shadow-md"
                 >
-                  {importing ? "Đang import..." : "Import kế hoạch"}
-                </button>
-                <button
+                  Import kế hoạch
+                </Button>
+                <Button
                   type="button"
                   onClick={cancelImport}
+                  variant="secondary"
+                  size="lg"
                   disabled={importing}
-                  className="rounded-xl border-2 border-slate-300 bg-white px-6 py-3.5 text-base font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 sm:flex-none"
+                  className="sm:flex-none"
                 >
                   Hủy
-                </button>
+                </Button>
               </div>
             </>
           )}
@@ -626,22 +754,27 @@ export default function KeHoachPage() {
                 ))}
               </div>
               <div className="flex flex-col gap-2 sm:flex-row">
-                <button
+                <Button
                   type="button"
                   onClick={saveStaging}
-                  disabled={savingStaging}
-                  className="flex-1 rounded-xl bg-emerald-600 px-6 py-3.5 text-base font-bold text-white shadow-md hover:bg-emerald-700 disabled:bg-slate-300"
+                  variant="success"
+                  size="lg"
+                  loading={savingStaging}
+                  loadingText="Đang lưu..."
+                  className="flex-1 shadow-md"
                 >
-                  {savingStaging ? "Đang lưu..." : "Lưu kế hoạch"}
-                </button>
-                <button
+                  Lưu kế hoạch
+                </Button>
+                <Button
                   type="button"
                   onClick={cancelStaging}
+                  variant="secondary"
+                  size="lg"
                   disabled={savingStaging}
-                  className="rounded-xl border-2 border-slate-300 bg-white px-6 py-3.5 text-base font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 sm:flex-none"
+                  className="sm:flex-none"
                 >
                   Hủy
-                </button>
+                </Button>
               </div>
             </>
           )}
@@ -795,13 +928,15 @@ export default function KeHoachPage() {
               + Thêm đơn
             </button>
           </div>
-          <button
+          <Button
             onClick={saveManual}
             disabled={!canEdit}
-            className="mt-3 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white disabled:bg-slate-300"
+            loading={savingManual}
+            loadingText="Đang lưu..."
+            className="mt-3"
           >
             Lưu nhập tay
-          </button>
+          </Button>
         </section>
       </div>
 
@@ -819,7 +954,7 @@ export default function KeHoachPage() {
           </a>
         </div>
         {loading ? (
-          <p className="py-12 text-center text-sm text-slate-400">Đang tải...</p>
+          <SkeletonTable rows={6} cols={8} />
         ) : orders.length === 0 ? (
           <p className="py-12 text-center text-sm text-slate-400">
             Chưa có kế hoạch cho ngày này
@@ -827,7 +962,7 @@ export default function KeHoachPage() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[900px] text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-400">
+              <thead className={tableHeadCls}>
                 <tr>
                   <th className="px-3 py-2">Giờ</th>
                   <th className="px-3 py-2">Cổng</th>
@@ -841,9 +976,11 @@ export default function KeHoachPage() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {orders.map((o) => (
-                  <tr key={o.id}>
+                  <tr key={o.id} className={tableRowHoverCls}>
                     <td className="px-3 py-2 font-semibold">{o.expected_time}</td>
-                    <td className="px-3 py-2">{o.gate_code}</td>
+                    <td className="px-3 py-2" title={o.gate_code}>
+                      {gateNameByCode[o.gate_code] ?? o.gate_code}
+                    </td>
                     <td className="px-3 py-2 font-mono">{o.order_code}</td>
                     <td className="px-3 py-2">{o.tonnage ?? "-"}</td>
                     <td className="px-3 py-2">{o.vehicle_plate ?? "-"}</td>
@@ -852,18 +989,22 @@ export default function KeHoachPage() {
                     <td className="px-3 py-2">
                       {canEdit ? (
                         <div className="flex gap-1">
-                          <button
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="bg-amber-100 text-amber-800 hover:bg-amber-200"
                             onClick={() => setEditing(o)}
-                            className="rounded bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800"
                           >
                             Sửa
-                          </button>
-                          <button
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            className="bg-red-100 text-red-700 hover:bg-red-200"
                             onClick={() => deleteOrder(o.id)}
-                            className="rounded bg-red-100 px-2 py-1 text-xs font-semibold text-red-700"
                           >
                             Xóa
-                          </button>
+                          </Button>
                         </div>
                       ) : (
                         <span className="text-xs text-slate-400">—</span>
@@ -878,27 +1019,74 @@ export default function KeHoachPage() {
       </section>
 
       {editing && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-xl">
+        <Modal open onClose={() => setEditing(null)} maxWidth="max-w-lg">
             <h3 className="mb-3 font-bold">Sửa dòng kế hoạch</h3>
             <div className="grid grid-cols-2 gap-2">
               <Field label="Cổng">
-                <input
-                  value={editing.gate_code}
-                  onChange={(e) =>
-                    setEditing({ ...editing, gate_code: e.target.value })
-                  }
-                  className={inputCls}
-                />
+                {gates.length > 0 ? (
+                  <select
+                    value={editing.gate_code}
+                    onChange={(e) => {
+                      const code = e.target.value;
+                      setEditing({
+                        ...editing,
+                        gate_code: code,
+                        expected_time: "",
+                        expected_minutes: 0,
+                      });
+                    }}
+                    className={inputCls}
+                  >
+                    <option value="">-- Chọn cổng --</option>
+                    {editGateOptions.map((g) => (
+                      <option key={g.id} value={g.code}>
+                        {g.code} — {g.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={editing.gate_code}
+                    onChange={(e) =>
+                      setEditing({ ...editing, gate_code: e.target.value })
+                    }
+                    className={inputCls}
+                  />
+                )}
               </Field>
               <Field label="Giờ">
-                <input
-                  value={editing.expected_time}
-                  onChange={(e) =>
-                    setEditing({ ...editing, expected_time: e.target.value })
-                  }
-                  className={inputCls}
-                />
+                {gates.length > 0 ? (
+                  <select
+                    value={editing.expected_time}
+                    onChange={(e) =>
+                      setEditing({
+                        ...editing,
+                        expected_time: e.target.value,
+                      })
+                    }
+                    className={inputCls}
+                    disabled={!editing.gate_code}
+                  >
+                    <option value="">
+                      {!editing.gate_code
+                        ? "-- Chọn cổng trước --"
+                        : "-- Chọn giờ --"}
+                    </option>
+                    {editTimeOptions.map((s) => (
+                      <option key={`${s.minutes}-${s.label}`} value={s.label}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    value={editing.expected_time}
+                    onChange={(e) =>
+                      setEditing({ ...editing, expected_time: e.target.value })
+                    }
+                    className={inputCls}
+                  />
+                )}
               </Field>
               <Field label="Đơn/Lệnh">
                 <input
@@ -911,15 +1099,8 @@ export default function KeHoachPage() {
               </Field>
               <Field label="Tấn">
                 <input
-                  value={editing.tonnage ?? ""}
-                  onChange={(e) =>
-                    setEditing({
-                      ...editing,
-                      tonnage: e.target.value
-                        ? Number(e.target.value)
-                        : null,
-                    })
-                  }
+                  value={editTonnageStr}
+                  onChange={(e) => setEditTonnageStr(e.target.value)}
                   className={inputCls}
                 />
               </Field>
@@ -949,23 +1130,24 @@ export default function KeHoachPage() {
               </Field>
             </div>
             <div className="mt-4 flex gap-2">
-              <button
+              <Button
                 onClick={saveEdit}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+                loading={savingEdit}
+                loadingText="Đang lưu..."
               >
                 Lưu
-              </button>
-              <button
+              </Button>
+              <Button
                 onClick={() => setEditing(null)}
-                className="rounded-lg bg-slate-200 px-4 py-2 text-sm font-semibold"
+                variant="ghost"
+                disabled={savingEdit}
               >
                 Hủy
-              </button>
+              </Button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
-    </main>
+    </>
   );
 }
 
@@ -983,12 +1165,14 @@ function StagingGroupCard({
   onChange: (patch: Partial<Pick<StagingGroup, "gateId" | "expectedTime">>) => void;
 }) {
   const [slots, setSlots] = useState<TimeSlot[]>([]);
+  const stagingSlotSeq = useRef(0);
 
   useEffect(() => {
     if (!group.gateId) {
       setSlots([]);
       return;
     }
+    const seq = ++stagingSlotSeq.current;
     const params = new URLSearchParams({
       date: planDate,
       gateId: String(group.gateId),
@@ -996,8 +1180,13 @@ function StagingGroupCard({
     if (group.plate) params.set("excludePlate", group.plate);
     fetch(`/api/plans/slots?${params}`)
       .then((r) => r.json())
-      .then((d) => setSlots(d.slots ?? []))
-      .catch(() => setSlots([]));
+      .then((d) => {
+        if (seq !== stagingSlotSeq.current) return;
+        setSlots(d.slots ?? []);
+      })
+      .catch(() => {
+        if (seq === stagingSlotSeq.current) setSlots([]);
+      });
   }, [group.gateId, group.plate, planDate]);
 
   return (
@@ -1056,16 +1245,11 @@ function StagingGroupCard({
           </select>
           {group.gateId && slots.length === 0 && (
             <p className="mt-1 text-xs text-amber-700">
-              Không còn khung giờ trống
+              Không có khung giờ khả dụng (cổng đóng hoặc đã hết slot)
             </p>
           )}
         </Field>
       </div>
-      {group.gateId && slots.length === 0 && (
-        <p className="mt-2 text-xs text-amber-700">
-          Không có khung giờ khả dụng (cổng đóng hoặc đã hết slot)
-        </p>
-      )}
     </div>
   );
 }
@@ -1075,7 +1259,7 @@ function Field({
   children,
 }: {
   label: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <label className="flex flex-col gap-1">

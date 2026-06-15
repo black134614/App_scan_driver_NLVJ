@@ -1,7 +1,10 @@
 "use client";
 
-import AppNav from "@/components/AppNav";
-import { minutesToTimeLabel } from "@/lib/plan-parse";
+import Button from "@/components/ui/Button";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import Modal from "@/components/ui/Modal";
+import PageHeader from "@/components/ui/PageHeader";
+import { SkeletonTable } from "@/components/ui/Skeleton";
 import {
   ALL_DAYS_MASK,
   WEEKDAY_BITS,
@@ -9,13 +12,12 @@ import {
   formatDaysMask,
   weekdaysFromMask,
 } from "@/lib/gate-weekdays";
+import { minutesToTimeLabel } from "@/lib/plan-parse";
+import { cardCls, inputCls, tableHeadCls, tableRowHoverCls } from "@/lib/ui";
 import type { CarrierRow, GateRow } from "@/lib/types";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type Tab = "carriers" | "gates" | "assign" | "links";
-
-const inputCls =
-  "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500";
 
 function minutesFromTimeInput(value: string): number {
   const [h, m] = value.split(":").map(Number);
@@ -37,6 +39,24 @@ export default function CauHinhPage() {
   >([]);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [pageLoading, setPageLoading] = useState(true);
+  const [savingCarrier, setSavingCarrier] = useState(false);
+  const [savingGate, setSavingGate] = useState(false);
+  const [savingEditGate, setSavingEditGate] = useState(false);
+  const [savingAssignment, setSavingAssignment] = useState(false);
+  const [assignLoading, setAssignLoading] = useState(false);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [regeneratingTokenId, setRegeneratingTokenId] = useState<number | null>(null);
+  const [regeneratingLinkKind, setRegeneratingLinkKind] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<{
+    type: "carrier" | "gate";
+    id: number;
+    name: string;
+  } | null>(null);
+  const [confirmLoading, setConfirmLoading] = useState(false);
+  const initialLoaded = useRef(false);
+  const assignSeq = useRef(0);
+  const prevTabRef = useRef<Tab>(tab);
 
   const [newCarrier, setNewCarrier] = useState({ code: "", name: "" });
   const [newGate, setNewGate] = useState<{
@@ -74,8 +94,9 @@ export default function CauHinhPage() {
     hidden: number[];
   }>({ slots: [], hidden: [] });
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     setError("");
+    if (!opts?.silent && !initialLoaded.current) setPageLoading(true);
     try {
       const [cRes, gRes, lRes] = await Promise.all([
         fetch("/api/config/carriers"),
@@ -93,6 +114,9 @@ export default function CauHinhPage() {
       setLinks(lData.links ?? []);
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      initialLoaded.current = true;
+      setPageLoading(false);
     }
   }, []);
 
@@ -100,32 +124,88 @@ export default function CauHinhPage() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    if (tab === "assign" && prevTabRef.current !== "assign" && assignCarrierId) {
+      void loadAssignment(assignCarrierId);
+    }
+    prevTabRef.current = tab;
+  }, [tab, assignCarrierId]);
+
+  const clearFeedback = () => {
+    setMessage("");
+    setError("");
+  };
+
   const loadAssignment = async (carrierId: number) => {
+    const seq = ++assignSeq.current;
+    setAssignLoading(true);
     setAssignCarrierId(carrierId);
-    const res = await fetch(
-      `/api/config/carrier-gates?carrierId=${carrierId}`
-    );
-    const data = await res.json();
-    setAssignedGateIds(data.gateIds ?? []);
+    setAssignedGateIds([]);
     setSlotGateId(null);
     setSlotConfig({ slots: [], hidden: [] });
+    setError("");
+    try {
+      const res = await fetch(
+        `/api/config/carrier-gates?carrierId=${carrierId}`,
+        { cache: "no-store" }
+      );
+      const data = await res.json();
+      if (seq !== assignSeq.current) return;
+      if (!res.ok) {
+        setError(data.error ?? "Không tải được phân quyền");
+        return;
+      }
+      const gateIds = (data.gateIds ?? [])
+        .map((id: unknown) => Number(id))
+        .filter((id: number) => Number.isInteger(id) && id > 0);
+      setAssignedGateIds(gateIds);
+    } catch {
+      if (seq === assignSeq.current) setError("Không tải được phân quyền");
+    } finally {
+      if (seq === assignSeq.current) setAssignLoading(false);
+    }
   };
 
   const loadSlots = async (carrierId: number, gateId: number) => {
+    setSlotsLoading(true);
     setSlotGateId(gateId);
-    const res = await fetch(
-      `/api/config/carrier-gates?carrierId=${carrierId}&gateId=${gateId}`
-    );
-    const data = await res.json();
-    setSlotConfig(data);
+    setError("");
+    try {
+      const res = await fetch(
+        `/api/config/carrier-gates?carrierId=${carrierId}&gateId=${gateId}`
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Không tải được khung giờ");
+        setSlotConfig({ slots: [], hidden: [] });
+        return;
+      }
+      setSlotConfig({
+        slots: Array.isArray(data.slots) ? data.slots : [],
+        hidden: Array.isArray(data.hidden) ? data.hidden : [],
+      });
+    } catch {
+      setError("Không tải được khung giờ");
+      setSlotConfig({ slots: [], hidden: [] });
+    } finally {
+      setSlotsLoading(false);
+    }
   };
 
-  const copyText = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setMessage("Đã copy link");
+  const copyText = async (text: string) => {
+    clearFeedback();
+    try {
+      await navigator.clipboard.writeText(text);
+      setMessage("Đã copy link");
+    } catch {
+      setError("Không copy được — thử copy thủ công");
+    }
   };
 
   const addCarrier = async () => {
+    setSavingCarrier(true);
+    clearFeedback();
+    try {
     const res = await fetch("/api/config/carriers", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -138,10 +218,20 @@ export default function CauHinhPage() {
     }
     setNewCarrier({ code: "", name: "" });
     setMessage("Đã thêm nhà vận tải");
-    load();
+    load({ silent: true });
+    } finally {
+      setSavingCarrier(false);
+    }
   };
 
   const addGate = async () => {
+    if (newGate.weekdays.length === 0) {
+      setError("Chọn ít nhất một ngày mở cổng");
+      return;
+    }
+    setSavingGate(true);
+    clearFeedback();
+    try {
     const res = await fetch("/api/config/gates", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -168,7 +258,10 @@ export default function CauHinhPage() {
       weekdays: WEEKDAY_BITS.map((b) => b.day),
     });
     setMessage("Đã thêm cổng");
-    load();
+    load({ silent: true });
+    } finally {
+      setSavingGate(false);
+    }
   };
 
   const openEditGate = (gate: GateRow) => {
@@ -186,6 +279,13 @@ export default function CauHinhPage() {
 
   const saveEditGate = async () => {
     if (!editingGate) return;
+    if (editGateForm.weekdays.length === 0) {
+      setError("Chọn ít nhất một ngày mở cổng");
+      return;
+    }
+    setSavingEditGate(true);
+    clearFeedback();
+    try {
     const res = await fetch(`/api/config/gates/${editingGate.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -206,7 +306,10 @@ export default function CauHinhPage() {
     }
     setEditingGate(null);
     setMessage("Đã cập nhật cổng");
-    load();
+    load({ silent: true });
+    } finally {
+      setSavingEditGate(false);
+    }
   };
 
   const toggleWeekday = (
@@ -233,7 +336,10 @@ export default function CauHinhPage() {
 
   const saveAssignment = async () => {
     if (!assignCarrierId) return;
-    await fetch("/api/config/carrier-gates", {
+    setSavingAssignment(true);
+    clearFeedback();
+    try {
+    const res = await fetch("/api/config/carrier-gates", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -241,12 +347,22 @@ export default function CauHinhPage() {
         gateIds: assignedGateIds,
       }),
     });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setError(data.error ?? "Không lưu được phân quyền");
+      return;
+    }
     setMessage("Đã lưu phân quyền cổng");
+    await loadAssignment(assignCarrierId);
+    } finally {
+      setSavingAssignment(false);
+    }
   };
 
   const toggleSlot = async (slotMinutes: number, hidden: boolean) => {
     if (!assignCarrierId || !slotGateId) return;
-    await fetch("/api/config/carrier-gates", {
+    clearFeedback();
+    const res = await fetch("/api/config/carrier-gates", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -256,10 +372,17 @@ export default function CauHinhPage() {
         hidden,
       }),
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setError(data.error ?? "Không cập nhật được khung giờ");
+      return;
+    }
     loadSlots(assignCarrierId, slotGateId);
   };
 
   const regenerateLink = async (kind: string) => {
+    setRegeneratingLinkKind(kind);
+    clearFeedback();
     const res = await fetch("/api/config/links", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -267,22 +390,54 @@ export default function CauHinhPage() {
     });
     if (!res.ok) {
       setError("Lỗi tạo lại link");
+      setRegeneratingLinkKind(null);
       return;
     }
     setMessage(`Đã tạo lại link ${kind}`);
-    load();
+    load({ silent: true });
+    setRegeneratingLinkKind(null);
   };
 
   const regenerateCarrierToken = async (id: number) => {
+    setRegeneratingTokenId(id);
+    clearFeedback();
     const res = await fetch(`/api/config/carriers/${id}/token`, {
       method: "POST",
     });
     if (!res.ok) {
       setError("Lỗi tạo lại token");
+      setRegeneratingTokenId(null);
       return;
     }
     setMessage("Đã tạo lại link nhà vận tải");
-    load();
+    load({ silent: true });
+    setRegeneratingTokenId(null);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!confirm) return;
+    setConfirmLoading(true);
+    clearFeedback();
+    try {
+      const url =
+        confirm.type === "carrier"
+          ? `/api/config/carriers/${confirm.id}`
+          : `/api/config/gates/${confirm.id}`;
+      const res = await fetch(url, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Không xóa được");
+      setMessage(
+        confirm.type === "carrier"
+          ? "Đã xóa nhà vận tải"
+          : "Đã xóa cổng"
+      );
+      setConfirm(null);
+      load({ silent: true });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setConfirmLoading(false);
+    }
   };
 
   const tabs: { id: Tab; label: string }[] = [
@@ -293,14 +448,11 @@ export default function CauHinhPage() {
   ];
 
   return (
-    <main className="mx-auto min-h-screen max-w-6xl px-4 py-6">
-      <AppNav />
-      <header className="mb-5">
-        <h1 className="text-2xl font-extrabold text-slate-800">Cấu hình hệ thống</h1>
-        <p className="text-sm text-slate-500">
-          Quản lý nhà vận tải, cổng, khung giờ và link truy cập
-        </p>
-      </header>
+    <>
+      <PageHeader
+        title="Cấu hình hệ thống"
+        description="Quản lý nhà vận tải, cổng, khung giờ và link truy cập"
+      />
 
       {message && (
         <div className="mb-3 rounded-xl bg-green-100 px-4 py-2 text-sm text-green-800">
@@ -318,7 +470,10 @@ export default function CauHinhPage() {
           <button
             key={t.id}
             type="button"
-            onClick={() => setTab(t.id)}
+            onClick={() => {
+              setTab(t.id);
+              setMessage("");
+            }}
             className={`rounded-lg px-4 py-2 text-sm font-semibold ${
               tab === t.id
                 ? "bg-blue-600 text-white"
@@ -352,53 +507,80 @@ export default function CauHinhPage() {
                 }
               />
             </div>
-            <button
+            <Button
               type="button"
               onClick={addCarrier}
-              className="mt-3 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+              loading={savingCarrier}
+              loadingText="Đang thêm..."
+              className="mt-3"
             >
               Thêm
-            </button>
+            </Button>
           </div>
-          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className={`overflow-hidden ${cardCls}`}>
+            {pageLoading ? (
+              <SkeletonTable rows={4} cols={4} />
+            ) : carriers.length === 0 ? (
+              <p className="py-12 text-center text-sm text-slate-400">
+                Chưa có nhà vận tải
+              </p>
+            ) : (
             <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-400">
+              <thead className={tableHeadCls}>
                 <tr>
                   <th className="px-3 py-2">Mã</th>
                   <th className="px-3 py-2">Tên</th>
                   <th className="px-3 py-2">Link</th>
-                  <th className="px-3 py-2"></th>
+                  <th className="px-3 py-2">Thao tác</th>
                 </tr>
               </thead>
               <tbody>
                 {carriers.map((c) => (
-                  <tr key={c.id} className="border-t border-slate-100">
+                  <tr key={c.id} className={`border-t border-slate-100 ${tableRowHoverCls}`}>
                     <td className="px-3 py-2 font-mono font-semibold">{c.code}</td>
                     <td className="px-3 py-2">{c.name}</td>
                     <td className="px-3 py-2">
-                      <button
-                        type="button"
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-blue-600 underline"
                         onClick={() =>
                           copyText(`${window.location.origin}/r/${c.token}`)
                         }
-                        className="text-xs text-blue-600 underline"
                       >
                         Copy link
-                      </button>
+                      </Button>
                     </td>
                     <td className="px-3 py-2">
-                      <button
-                        type="button"
-                        onClick={() => regenerateCarrierToken(c.id)}
-                        className="text-xs text-slate-500"
-                      >
-                        Đổi link
-                      </button>
+                      <div className="flex flex-wrap gap-1">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          loading={regeneratingTokenId === c.id}
+                          onClick={() => regenerateCarrierToken(c.id)}
+                        >
+                          Đổi link
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          onClick={() =>
+                            setConfirm({
+                              type: "carrier",
+                              id: c.id,
+                              name: c.name,
+                            })
+                          }
+                        >
+                          Xóa
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            )}
           </div>
         </section>
       )}
@@ -461,6 +643,7 @@ export default function CauHinhPage() {
                   >
                     <input
                       type="checkbox"
+                      className="h-4 w-4 accent-blue-600"
                       checked={newGate.weekdays.includes(day)}
                       onChange={(e) =>
                         toggleWeekday(day, e.target.checked, "new")
@@ -471,17 +654,26 @@ export default function CauHinhPage() {
                 ))}
               </div>
             </div>
-            <button
+            <Button
               type="button"
               onClick={addGate}
-              className="mt-3 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+              loading={savingGate}
+              loadingText="Đang thêm..."
+              className="mt-3"
             >
               Thêm cổng
-            </button>
+            </Button>
           </div>
-          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-400">
+          <div className={`overflow-x-auto ${cardCls}`}>
+            {pageLoading ? (
+              <SkeletonTable rows={4} cols={6} />
+            ) : gates.length === 0 ? (
+              <p className="py-12 text-center text-sm text-slate-400">
+                Chưa có cổng
+              </p>
+            ) : (
+            <table className="w-full min-w-[640px] text-left text-sm">
+              <thead className={tableHeadCls}>
                 <tr>
                   <th className="px-3 py-2">Mã</th>
                   <th className="px-3 py-2">Tên</th>
@@ -493,7 +685,7 @@ export default function CauHinhPage() {
               </thead>
               <tbody>
                 {gates.map((g) => (
-                  <tr key={g.id} className="border-t border-slate-100">
+                  <tr key={g.id} className={`border-t border-slate-100 ${tableRowHoverCls}`}>
                     <td className="px-3 py-2 font-semibold">{g.code}</td>
                     <td className="px-3 py-2">{g.name}</td>
                     <td className="px-3 py-2">
@@ -505,18 +697,35 @@ export default function CauHinhPage() {
                       {formatDaysMask(g.days_mask ?? ALL_DAYS_MASK)}
                     </td>
                     <td className="px-3 py-2">
-                      <button
-                        type="button"
-                        onClick={() => openEditGate(g)}
-                        className="rounded bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-800"
-                      >
-                        Sửa
-                      </button>
+                      <div className="flex gap-1">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="bg-amber-100 text-amber-800"
+                          onClick={() => openEditGate(g)}
+                        >
+                          Sửa
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          onClick={() =>
+                            setConfirm({
+                              type: "gate",
+                              id: g.id,
+                              name: g.code,
+                            })
+                          }
+                        >
+                          Xóa
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            )}
           </div>
         </section>
       )}
@@ -525,6 +734,11 @@ export default function CauHinhPage() {
         <section className="grid gap-4 lg:grid-cols-2">
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <h2 className="mb-3 font-bold">Chọn nhà vận tải</h2>
+            {pageLoading ? (
+              <SkeletonTable rows={3} cols={1} />
+            ) : carriers.length === 0 ? (
+              <p className="text-sm text-slate-400">Chưa có nhà vận tải</p>
+            ) : (
             <div className="space-y-2">
               {carriers.map((c) => (
                 <button
@@ -541,20 +755,36 @@ export default function CauHinhPage() {
                 </button>
               ))}
             </div>
+            )}
+            {assignLoading && (
+              <p className="mt-2 text-xs text-slate-400">Đang tải phân quyền...</p>
+            )}
           </div>
           {assignCarrierId && (
             <div className="space-y-4">
               <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                 <h2 className="mb-3 font-bold">Cổng được phép</h2>
+                {assignLoading ? (
+                  <p className="mb-3 text-sm text-slate-400">
+                    Đang tải cổng đã phân quyền...
+                  </p>
+                ) : null}
                 <div className="space-y-2">
-                  {gates.map((g) => (
+                  {gates.length === 0 ? (
+                    <p className="text-sm text-slate-400">Chưa có cổng</p>
+                  ) : (
+                  gates.map((g) => (
                     <label
                       key={g.id}
-                      className="flex items-center gap-2 text-sm"
+                      className={`flex items-center gap-2 text-sm ${
+                        assignLoading ? "opacity-50" : ""
+                      }`}
                     >
                       <input
                         type="checkbox"
+                        className="h-4 w-4 accent-blue-600"
                         checked={assignedGateIds.includes(g.id)}
+                        disabled={assignLoading}
                         onChange={(e) => {
                           if (e.target.checked) {
                             setAssignedGateIds([...assignedGateIds, g.id]);
@@ -567,15 +797,18 @@ export default function CauHinhPage() {
                       />
                       {g.code} — {g.name}
                     </label>
-                  ))}
+                  ))
+                  )}
                 </div>
-                <button
+                <Button
                   type="button"
                   onClick={saveAssignment}
-                  className="mt-3 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+                  loading={savingAssignment}
+                  loadingText="Đang lưu..."
+                  className="mt-3"
                 >
                   Lưu phân quyền
-                </button>
+                </Button>
               </div>
               <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                 <h2 className="mb-3 font-bold">Ẩn/hiện khung giờ</h2>
@@ -599,7 +832,14 @@ export default function CauHinhPage() {
                 </div>
                 {slotGateId && (
                   <div className="flex flex-wrap gap-2">
-                    {slotConfig.slots.map((s) => {
+                    {slotsLoading ? (
+                      <p className="text-xs text-slate-400">Đang tải khung giờ...</p>
+                    ) : slotConfig.slots.length === 0 ? (
+                      <p className="text-xs text-slate-400">
+                        Không có khung giờ cho cổng này
+                      </p>
+                    ) : (
+                    slotConfig.slots.map((s) => {
                       const hidden = slotConfig.hidden.includes(s.minutes);
                       return (
                         <button
@@ -615,7 +855,8 @@ export default function CauHinhPage() {
                           {s.label}
                         </button>
                       );
-                    })}
+                    })
+                    )}
                   </div>
                 )}
               </div>
@@ -628,7 +869,12 @@ export default function CauHinhPage() {
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <h2 className="mb-3 font-bold">Link truy cập hệ thống</h2>
           <div className="space-y-3">
-            {links.map((l) => (
+            {pageLoading ? (
+              <SkeletonTable rows={2} cols={2} />
+            ) : links.length === 0 ? (
+              <p className="text-sm text-slate-400">Chưa có link</p>
+            ) : (
+            links.map((l) => (
               <div
                 key={l.kind}
                 className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-100 p-3"
@@ -638,23 +884,21 @@ export default function CauHinhPage() {
                   <p className="break-all text-xs text-slate-500">{l.url}</p>
                 </div>
                 <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => copyText(l.url)}
-                    className="rounded-lg border px-3 py-1 text-xs font-semibold"
-                  >
+                  <Button size="sm" variant="secondary" onClick={() => copyText(l.url)}>
                     Copy
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    loading={regeneratingLinkKind === l.kind}
                     onClick={() => regenerateLink(l.kind)}
-                    className="rounded-lg bg-slate-100 px-3 py-1 text-xs font-semibold"
                   >
                     Đổi link
-                  </button>
+                  </Button>
                 </div>
               </div>
-            ))}
+            ))
+            )}
             <p className="text-xs text-slate-500">
               Mỗi nhà vận tải có link riêng tại tab Nhà vận tải. Link kho = full
               quyền. Link driver = tài xế.
@@ -663,8 +907,7 @@ export default function CauHinhPage() {
         </section>
       )}
       {editingGate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+        <Modal open onClose={() => setEditingGate(null)} maxWidth="max-w-lg">
             <h3 className="mb-3 font-bold">Sửa cổng — {editingGate.code}</h3>
             <div className="grid grid-cols-2 gap-2">
               <input
@@ -720,6 +963,7 @@ export default function CauHinhPage() {
                   >
                     <input
                       type="checkbox"
+                      className="h-4 w-4 accent-blue-600"
                       checked={editGateForm.weekdays.includes(day)}
                       onChange={(e) =>
                         toggleWeekday(day, e.target.checked, "edit")
@@ -741,24 +985,39 @@ export default function CauHinhPage() {
               Cổng đang hoạt động
             </label>
             <div className="mt-4 flex gap-2">
-              <button
+              <Button
                 type="button"
                 onClick={saveEditGate}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+                loading={savingEditGate}
+                loadingText="Đang lưu..."
               >
                 Lưu
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
                 onClick={() => setEditingGate(null)}
-                className="rounded-lg bg-slate-200 px-4 py-2 text-sm font-semibold"
+                variant="ghost"
+                disabled={savingEditGate}
               >
                 Hủy
-              </button>
+              </Button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
-    </main>
+
+      <ConfirmDialog
+        open={confirm != null}
+        title={confirm?.type === "carrier" ? "Xóa nhà vận tải" : "Xóa cổng"}
+        message={
+          confirm
+            ? `Bạn có chắc muốn xóa "${confirm.name}"? Hành động không hoàn tác.`
+            : ""
+        }
+        confirmLabel="Xóa"
+        loading={confirmLoading}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setConfirm(null)}
+      />
+    </>
   );
 }

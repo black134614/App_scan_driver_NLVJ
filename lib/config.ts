@@ -71,6 +71,30 @@ export async function deleteCarrier(id: number): Promise<boolean> {
   return info.changes > 0;
 }
 
+export async function getGateCarrierNameMap(): Promise<Record<string, string>> {
+  const rows = await dbAll<{ code: string; names: string }>(
+    `SELECT g.code, GROUP_CONCAT(DISTINCT c.name) AS names
+     FROM gates g
+     INNER JOIN carrier_gates cg ON cg.gate_id = g.id
+     INNER JOIN carriers c ON c.id = cg.carrier_id AND c.active = 1
+     GROUP BY g.code`
+  );
+  const map: Record<string, string> = {};
+  for (const row of rows) {
+    map[row.code] = row.names;
+  }
+  return map;
+}
+
+export async function getGateNameMap(): Promise<Record<string, string>> {
+  const gates = await listGates();
+  const map: Record<string, string> = {};
+  for (const g of gates) {
+    map[g.code] = g.name?.trim() || g.code;
+  }
+  return map;
+}
+
 export async function listGates(): Promise<GateRow[]> {
   return dbAll<GateRow>("SELECT * FROM gates ORDER BY code ASC");
 }

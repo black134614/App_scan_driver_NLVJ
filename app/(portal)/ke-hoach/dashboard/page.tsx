@@ -1,16 +1,24 @@
 "use client";
 
-import AppNav from "@/components/AppNav";
+import { SkeletonCards, SkeletonGrid } from "@/components/ui/Skeleton";
+import Spinner from "@/components/ui/Spinner";
+import Modal from "@/components/ui/Modal";
+import PageHeader from "@/components/ui/PageHeader";
 import { todayDateString } from "@/lib/plan-parse";
+import { usePortal } from "@/lib/portal-context";
+import { carrierColorStyle, SHIFT_SECTION_STYLE } from "@/lib/carrier-colors";
+import { inputCls } from "@/lib/ui";
 import type {
   PlanDayView,
+  PlanGrid,
   PlanGridCell,
   PlanOrderRow,
+  PlanShift,
   SessionWithOrders,
   TruckQueueItem,
   TruckQueueStatus,
 } from "@/lib/types";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 const POLL_MS = 5000;
 
@@ -31,19 +39,59 @@ const STATUS_COLOR: Record<TruckQueueStatus, string> = {
 };
 
 const CELL_COLOR: Record<PlanGridCell["status"], string> = {
-  planned: "bg-white border-slate-200",
-  in_progress: "bg-amber-50 border-amber-300",
-  done: "bg-green-50 border-green-300",
+  planned: "bg-white border-slate-400",
+  in_progress: "bg-amber-100 border-amber-500",
+  done: "bg-green-100 border-green-600",
 };
 
+function carrierGroups(
+  gates: string[],
+  gateCarriers: Record<string, string>
+): Array<{ carrierName: string; gates: string[] }> {
+  const order: string[] = [];
+  const map = new Map<string, string[]>();
+  for (const gate of gates) {
+    const carrier = gateCarriers[gate]?.trim() || "Chưa gán VT";
+    if (!map.has(carrier)) {
+      map.set(carrier, []);
+      order.push(carrier);
+    }
+    map.get(carrier)!.push(gate);
+  }
+  return order.map((carrierName) => ({
+    carrierName,
+    gates: map.get(carrierName)!,
+  }));
+}
+
+function timesForShift(grid: PlanGrid, shift: PlanShift): string[] {
+  const timeMinutes = new Map<string, number>();
+  for (const gate of grid.gates) {
+    const row = grid.cells[gate];
+    if (!row) continue;
+    for (const [time, cells] of Object.entries(row)) {
+      const match = cells.find((c) => c.order.shift === shift);
+      if (match) {
+        timeMinutes.set(time, match.order.expected_minutes);
+      }
+    }
+  }
+  return [...timeMinutes.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .map(([t]) => t);
+}
+
 export default function KeHoachDashboardPage() {
+  const { carrierName } = usePortal();
   const [date, setDate] = useState(todayDateString());
   const [view, setView] = useState<PlanDayView | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
-  const [carrierName, setCarrierName] = useState<string | null>(null);
   const [detailPlate, setDetailPlate] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [filterCarrier, setFilterCarrier] = useState("");
+  const [filterGate, setFilterGate] = useState("");
   const [detailData, setDetailData] = useState<{
     plan: PlanOrderRow[];
     session: SessionWithOrders | null;
@@ -51,41 +99,16 @@ export default function KeHoachDashboardPage() {
   } | null>(null);
 
   useEffect(() => {
-    fetch("/api/me", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d) => setCarrierName(d.carrierName ?? null))
-      .catch(() => {});
-  }, []);
-
-  const load = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/plans?date=${date}`, { cache: "no-store" });
-      const data = await res.json();
-      if (res.ok) {
-        setView(data);
-        setLastUpdated(Date.now());
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [date]);
-
-  useEffect(() => {
-    setLoading(true);
-    load();
-    const t = setInterval(load, POLL_MS);
-    return () => clearInterval(t);
-  }, [load]);
-
-  useEffect(() => {
     if (!detailPlate) {
       setDetailData(null);
       return;
     }
+    const ac = new AbortController();
     setDetailLoading(true);
+    setDetailData(null);
     fetch(
       `/api/plans/truck-detail?date=${encodeURIComponent(date)}&plate=${encodeURIComponent(detailPlate)}`,
-      { cache: "no-store" }
+      { cache: "no-store", signal: ac.signal }
     )
       .then((r) => r.json())
       .then((d) => {
@@ -95,11 +118,51 @@ export default function KeHoachDashboardPage() {
             session: d.session ?? null,
             carrierName: d.carrierName ?? null,
           });
+        } else {
+          setDetailData(null);
         }
       })
-      .catch(() => setDetailData(null))
+      .catch((e) => {
+        if (e.name !== "AbortError") setDetailData(null);
+      })
       .finally(() => setDetailLoading(false));
+    return () => ac.abort();
   }, [detailPlate, date]);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/plans?date=${date}`, { cache: "no-store" });
+      const data = await res.json();
+      if (res.ok) {
+        setView(data);
+        setLastUpdated(Date.now());
+        setLoadError(null);
+      } else {
+        setLoadError(data.error ?? "Không tải được kế hoạch");
+      }
+    } catch {
+      setLoadError("Lỗi kết nối — thử lại sau");
+    } finally {
+      setLoading(false);
+    }
+  }, [date]);
+
+  useEffect(() => {
+    setLoading(true);
+    setView(null);
+    setLoadError(null);
+    setFilterCarrier("");
+    setFilterGate("");
+    load();
+  }, [date, load]);
+
+  useEffect(() => {
+    const tick = () => {
+      if (!document.hidden) load();
+    };
+    const t = setInterval(tick, POLL_MS);
+    return () => clearInterval(t);
+  }, [load]);
 
   const openDetail = (plate: string) => {
     setDetailPlate(plate.trim().toUpperCase());
@@ -113,93 +176,240 @@ export default function KeHoachDashboardPage() {
   const stats = view?.stats;
   const grid = view?.grid;
   const queue = view?.queue ?? [];
+  const gateCarriers = view?.gateCarriers ?? {};
+  const gateNames = view?.gateNames ?? {};
+  const gateCount = grid?.gates.length ?? 0;
+  const statsOnSide = gateCount > 0 && gateCount <= 5;
 
-  const morningTimes =
-    grid?.times.filter((t) => {
-      const cell = Object.values(grid.cells).find((g) => g[t]?.length);
-      return cell?.[t]?.[0]?.order.shift === "sang";
-    }) ?? [];
-  const afternoonTimes =
-    grid?.times.filter((t) => !morningTimes.includes(t)) ?? [];
+  const carrierOptions = useMemo(() => {
+    if (!grid) return [];
+    const names = new Set<string>();
+    for (const gate of grid.gates) {
+      const name = gateCarriers[gate]?.trim();
+      if (name) names.add(name);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b, "vi"));
+  }, [grid, gateCarriers]);
+
+  const gateOptions = useMemo(() => {
+    if (!grid) return [];
+    return grid.gates
+      .filter((gate) => !filterCarrier || gateCarriers[gate] === filterCarrier)
+      .map((gate) => ({
+        code: gate,
+        label: gateNames[gate] ?? gate,
+      }));
+  }, [grid, gateCarriers, gateNames, filterCarrier]);
+
+  const filteredGates = useMemo(() => {
+    if (!grid) return [];
+    let gates = grid.gates;
+    if (filterCarrier) {
+      gates = gates.filter((g) => gateCarriers[g] === filterCarrier);
+    }
+    if (filterGate) {
+      gates = gates.filter((g) => g === filterGate);
+    }
+    return gates;
+  }, [grid, filterCarrier, filterGate, gateCarriers]);
+
+  const filteredGrid = useMemo((): PlanGrid | null => {
+    if (!grid) return null;
+    if (filteredGates.length === 0) return { gates: [], cells: {}, times: [] };
+    if (
+      filteredGates.length === grid.gates.length &&
+      filteredGates.every((g, i) => g === grid.gates[i])
+    ) {
+      return grid;
+    }
+    const cells: PlanGrid["cells"] = {};
+    for (const gate of filteredGates) {
+      cells[gate] = grid.cells[gate] ?? {};
+    }
+    return { gates: filteredGates, cells, times: grid.times };
+  }, [grid, filteredGates]);
+
+  const filteredQueue = useMemo(() => {
+    return queue.filter((item) => {
+      if (filterGate && item.gateCode !== filterGate) return false;
+      if (filterCarrier) {
+        const gate = item.gateCode;
+        if (!gate || gateCarriers[gate] !== filterCarrier) return false;
+      }
+      return true;
+    });
+  }, [queue, filterCarrier, filterGate, gateCarriers]);
+
+  const hasActiveFilter = Boolean(filterCarrier || filterGate);
+
+  useEffect(() => {
+    if (filterGate && !gateOptions.some((g) => g.code === filterGate)) {
+      setFilterGate("");
+    }
+  }, [gateOptions, filterGate]);
+
+  const morningTimes = filteredGrid ? timesForShift(filteredGrid, "sang") : [];
+  const afternoonTimes = filteredGrid ? timesForShift(filteredGrid, "chieu") : [];
+
+  const gridBlocks = (
+    <>
+      {loading && !view ? (
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <SkeletonGrid rows={5} cols={4} />
+        </div>
+      ) : !filteredGrid || filteredGrid.gates.length === 0 ? (
+        <div className="rounded-2xl border-2 border-dashed border-slate-300 bg-white py-20 text-center text-slate-600">
+          {grid && grid.gates.length > 0 && hasActiveFilter
+            ? "Không có cổng phù hợp bộ lọc — thử chọn lại nhà vận tải hoặc cổng"
+            : `Chưa có kế hoạch cho ngày ${date}`}
+        </div>
+      ) : (
+        <>
+          <GridSection
+            title="Ca sáng"
+            shift="sang"
+            times={morningTimes}
+            grid={filteredGrid}
+            gateCarriers={gateCarriers}
+            gateNames={gateNames}
+            onDetail={openDetail}
+          />
+          <GridSection
+            title="Ca chiều"
+            shift="chieu"
+            times={afternoonTimes}
+            grid={filteredGrid}
+            gateCarriers={gateCarriers}
+            gateNames={gateNames}
+            onDetail={openDetail}
+          />
+        </>
+      )}
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-700">
+          Hàng đợi xe ({loading && !view ? "…" : filteredQueue.length})
+        </h2>
+        {loading && !view ? (
+          <SkeletonCards count={3} />
+        ) : filteredQueue.length === 0 ? (
+          <p className="text-sm text-slate-500">
+            {queue.length > 0 && hasActiveFilter
+              ? "Không có xe phù hợp bộ lọc"
+              : "Không có xe"}
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {filteredQueue.map((item) => (
+              <QueueCard
+                key={item.vehiclePlate}
+                item={item}
+                onDetail={openDetail}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+    </>
+  );
 
   return (
-    <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-5 sm:px-6">
-      <AppNav />
-      <header className="mb-4 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-extrabold text-slate-800">
-            Dashboard kế hoạch xuất
-          </h1>
-          <p className="text-sm text-slate-500">
+    <>
+      <PageHeader
+        title="Dashboard kế hoạch xuất"
+        description={
+          <>
             {carrierName
               ? `Theo dõi cổng & xe — ${carrierName}`
-              : "Tổng quan cổng × khung giờ"}
+              : "Tổng quan cổng × khung giờ theo nhà vận tải"}
             {" · "}tự làm mới {POLL_MS / 1000}s
             {lastUpdated &&
               ` · cập nhật ${new Date(lastUpdated).toLocaleTimeString("vi-VN")}`}
-          </p>
-        </div>
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-          className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
-        />
-      </header>
-
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_280px]">
-        <div className="min-w-0 space-y-4">
-          {loading && !view ? (
-            <div className="rounded-2xl bg-white py-20 text-center text-slate-400">
-              Đang tải...
-            </div>
-          ) : !grid || grid.gates.length === 0 ? (
-            <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-white py-20 text-center text-slate-400">
-              Chưa có kế hoạch cho ngày {date}
-            </div>
-          ) : (
-            <>
-              <GridSection
-                title="Ca sáng"
-                times={morningTimes.length ? morningTimes : grid.times.filter((_, i) => i < Math.ceil(grid.times.length / 2))}
-                grid={grid}
-                onDetail={openDetail}
+          </>
+        }
+        actions={
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="flex min-w-[140px] flex-col gap-1 text-sm">
+              <span className="font-semibold text-slate-700">Ngày</span>
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className={inputCls}
               />
-              <GridSection
-                title="Ca chiều"
-                times={afternoonTimes.length ? afternoonTimes : grid.times.filter((_, i) => i >= Math.ceil(grid.times.length / 2))}
-                grid={grid}
-                onDetail={openDetail}
-              />
-            </>
-          )}
-
-          <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-500">
-              Hàng đợi xe ({queue.length})
-            </h2>
-            {queue.length === 0 ? (
-              <p className="text-sm text-slate-400">Không có xe</p>
-            ) : (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {queue.map((item) => (
-                  <QueueCard
-                    key={item.vehiclePlate}
-                    item={item}
-                    onDetail={openDetail}
-                  />
+            </label>
+            <label className="flex min-w-[180px] flex-col gap-1 text-sm">
+              <span className="font-semibold text-slate-700">Nhà vận tải</span>
+              <select
+                value={filterCarrier}
+                onChange={(e) => {
+                  setFilterCarrier(e.target.value);
+                  setFilterGate("");
+                }}
+                className={inputCls}
+                disabled={!grid || carrierOptions.length === 0}
+              >
+                <option value="">Tất cả</option>
+                {carrierOptions.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
                 ))}
-              </div>
-            )}
-          </section>
-        </div>
+              </select>
+            </label>
+            <label className="flex min-w-[160px] flex-col gap-1 text-sm">
+              <span className="font-semibold text-slate-700">Cổng xuất</span>
+              <select
+                value={filterGate}
+                onChange={(e) => setFilterGate(e.target.value)}
+                className={inputCls}
+                disabled={!grid || gateOptions.length === 0}
+              >
+                <option value="">Tất cả</option>
+                {gateOptions.map((g) => (
+                  <option key={g.code} value={g.code}>
+                    {g.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {hasActiveFilter ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setFilterCarrier("");
+                  setFilterGate("");
+                }}
+                className="rounded-lg border border-slate-400 bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200"
+              >
+                Xóa lọc
+              </button>
+            ) : null}
+          </div>
+        }
+      />
 
-        {stats && (
-          <aside className="space-y-3">
-            <StatsPanel stats={stats} />
-          </aside>
-        )}
-      </div>
+      {loadError && (
+        <div className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+          {loadError}
+        </div>
+      )}
+
+      {statsOnSide ? (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_280px]">
+          <div className="min-w-0 space-y-4">{gridBlocks}</div>
+          {stats && (
+            <aside className="space-y-3">
+              <StatsPanel stats={stats} />
+            </aside>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {gridBlocks}
+          {stats && <StatsPanel stats={stats} wide />}
+        </div>
+      )}
 
       {detailPlate && (
         <TruckDetailModal
@@ -210,92 +420,134 @@ export default function KeHoachDashboardPage() {
           onClose={closeDetail}
         />
       )}
-    </main>
+    </>
   );
 }
 
 function GridSection({
   title,
+  shift,
   times,
   grid,
+  gateCarriers,
+  gateNames,
   onDetail,
 }: {
   title: string;
+  shift: PlanShift;
   times: string[];
   grid: PlanDayView["grid"];
+  gateCarriers: Record<string, string>;
+  gateNames: Record<string, string>;
   onDetail: (plate: string) => void;
 }) {
   if (times.length === 0) return null;
+  const groups = carrierGroups(grid.gates, gateCarriers);
+  const shiftStyle = SHIFT_SECTION_STYLE[shift];
   return (
-    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="border-b border-slate-100 bg-slate-50 px-4 py-2">
-        <h2 className="text-sm font-bold text-slate-700">{title}</h2>
+    <section
+      className={`overflow-hidden rounded-2xl border-2 bg-white ${shiftStyle.section}`}
+    >
+      <div className={`px-4 py-3 ${shiftStyle.bar}`}>
+        <div className="flex items-center gap-3">
+          <span
+            className={`rounded px-2.5 py-1 text-xs font-bold uppercase tracking-wide ${shiftStyle.badge}`}
+          >
+            {shift === "sang" ? "Sáng" : "Chiều"}
+          </span>
+          <h2 className={`text-lg font-extrabold ${shiftStyle.title}`}>
+            {title}
+          </h2>
+        </div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[800px] border-collapse text-xs">
+        <table className="w-full min-w-[800px] border-collapse text-sm">
           <thead>
             <tr>
-              <th className="sticky left-0 z-10 border border-slate-200 bg-slate-100 px-2 py-2 text-left font-bold">
+              <th
+                rowSpan={2}
+                className="sticky left-0 z-20 border border-slate-400 bg-slate-300 px-3 py-2.5 text-left text-sm font-bold text-slate-900 align-middle"
+              >
                 Khung TG
               </th>
-              {grid.gates.map((gate) => (
-                <th
-                  key={gate}
-                  className="min-w-[100px] border border-slate-200 bg-slate-100 px-2 py-2 text-center font-bold"
-                >
-                  {gate}
-                </th>
-              ))}
+              {groups.map((g) => {
+                const colors = carrierColorStyle(g.carrierName);
+                return (
+                  <th
+                    key={g.carrierName}
+                    colSpan={g.gates.length}
+                    className={`border px-2 py-2 text-center text-xs font-extrabold uppercase tracking-wide ${colors.headerBg} ${colors.headerText} ${colors.border}`}
+                  >
+                    {g.carrierName}
+                  </th>
+                );
+              })}
+            </tr>
+            <tr>
+              {groups.flatMap((g) => {
+                const colors = carrierColorStyle(g.carrierName);
+                return g.gates.map((gate) => (
+                  <th
+                    key={gate}
+                    title={gate}
+                    className={`min-w-[110px] border px-2 py-2.5 text-center text-sm font-bold ${colors.gateBg} ${colors.gateText} ${colors.border}`}
+                  >
+                    {gateNames[gate] ?? gate}
+                  </th>
+                ));
+              })}
             </tr>
           </thead>
           <tbody>
             {times.map((time) => (
               <tr key={time}>
-                <td className="sticky left-0 z-10 border border-slate-200 bg-slate-50 px-2 py-2 font-semibold whitespace-nowrap">
+                <td className="sticky left-0 z-10 border border-slate-400 bg-slate-200 px-3 py-2.5 text-sm font-bold text-slate-900 whitespace-nowrap">
                   {time}
                 </td>
                 {grid.gates.map((gate) => {
-                  const cells = grid.cells[gate]?.[time] ?? [];
+                  const cells = (grid.cells[gate]?.[time] ?? []).filter(
+                    (c) => c.order.shift === shift
+                  );
                   return (
                     <td
                       key={`${gate}-${time}`}
-                      className="border border-slate-200 p-1 align-top"
+                      className="border border-slate-300 p-1.5 align-top bg-slate-50/50"
                     >
-                      <div className="flex min-h-[52px] flex-col gap-0.5">
+                      <div className="flex min-h-[60px] flex-col gap-1">
                         {cells.length === 0 ? (
-                          <span className="flex h-full items-center justify-center rounded border border-dashed border-slate-200 text-[10px] text-slate-300">
+                          <span className="flex h-full items-center justify-center rounded border border-dashed border-slate-400 text-xs font-medium text-slate-500">
                             Trống
                           </span>
                         ) : (
                           cells.map(({ order, status }) => (
                             <div
                               key={order.id}
-                              className={`rounded-lg border-2 px-1.5 py-1 text-[10px] leading-tight ${CELL_COLOR[status]}`}
+                              className={`rounded-lg border-2 px-2 py-1.5 text-xs leading-snug ${CELL_COLOR[status]}`}
                               title={`${order.order_code}${order.vehicle_plate ? ` · ${order.vehicle_plate}` : ""}${order.driver_name ? ` · ${order.driver_name}` : ""}`}
                             >
                               {order.vehicle_plate ? (
                                 <div className="flex items-center justify-between gap-1">
-                                  <div className="truncate font-bold text-slate-800">
+                                  <div className="truncate text-sm font-extrabold text-slate-900">
                                     {order.vehicle_plate}
                                   </div>
                                   <button
                                     type="button"
                                     onClick={() => onDetail(order.vehicle_plate!)}
-                                    className="shrink-0 rounded bg-white/80 px-1 py-0.5 text-[9px] font-bold text-blue-700 hover:bg-white"
+                                    className="shrink-0 rounded bg-blue-700 px-1.5 py-0.5 text-[10px] font-bold text-white hover:bg-blue-800"
                                   >
                                     Chi tiết
                                   </button>
                                 </div>
                               ) : (
-                                <div className="truncate font-semibold text-slate-500">
+                                <div className="truncate text-sm font-semibold text-slate-600">
                                   Chưa gán xe
                                 </div>
                               )}
-                              <div className="truncate text-slate-600">
+                              <div className="truncate font-medium text-slate-800">
                                 {order.order_code}
                               </div>
                               {order.driver_name && (
-                                <div className="truncate text-slate-400">
+                                <div className="truncate text-slate-600">
                                   {order.driver_name}
                                 </div>
                               )}
@@ -315,7 +567,13 @@ function GridSection({
   );
 }
 
-function StatsPanel({ stats }: { stats: PlanDayView["stats"] }) {
+function StatsPanel({
+  stats,
+  wide = false,
+}: {
+  stats: PlanDayView["stats"];
+  wide?: boolean;
+}) {
   const rows = [
     {
       label: "Tổng tấn",
@@ -344,7 +602,11 @@ function StatsPanel({ stats }: { stats: PlanDayView["stats"] }) {
   ];
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div
+      className={`rounded-2xl border border-slate-200 bg-white p-4 shadow-sm ${
+        wide ? "w-full" : ""
+      }`}
+    >
       <h2 className="mb-3 text-center text-sm font-bold uppercase text-slate-600">
         Thống kê
       </h2>
@@ -449,8 +711,7 @@ function TruckDetailModal({
   const firstPlan = data?.plan[0];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+    <Modal open onClose={onClose} maxWidth="max-w-2xl">
         <div className="mb-4 flex items-start justify-between gap-3">
           <div>
             <h3 className="text-lg font-bold text-slate-800">
@@ -468,7 +729,10 @@ function TruckDetailModal({
         </div>
 
         {loading ? (
-          <p className="py-8 text-center text-sm text-slate-400">Đang tải...</p>
+          <div className="flex flex-col items-center justify-center gap-3 py-12">
+            <Spinner size="lg" />
+            <p className="text-sm text-slate-400">Đang tải chi tiết...</p>
+          </div>
         ) : !data ? (
           <p className="py-8 text-center text-sm text-slate-400">
             Không tải được dữ liệu
@@ -583,7 +847,6 @@ function TruckDetailModal({
             </section>
           </div>
         )}
-      </div>
-    </div>
+    </Modal>
   );
 }
