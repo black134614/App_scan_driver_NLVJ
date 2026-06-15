@@ -1,5 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deletePlanOrder, getPlanOrder, updatePlanOrder } from "@/lib/plans";
+import {
+  assertCarrierEdit,
+  forbidden,
+  getSessionFromRequest,
+} from "@/lib/api-auth";
+import {
+  deletePlanOrder,
+  getPlanOrder,
+  updatePlanOrder,
+  validateCarrierPlanInput,
+} from "@/lib/plans";
 import type { PlanOrderInput } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -50,10 +60,31 @@ export async function PUT(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const session = await getSessionFromRequest(req);
+  if (session.role !== "warehouse" && session.role !== "carrier") {
+    return forbidden();
+  }
+
   const { id } = await params;
   const orderId = Number(id);
   if (!Number.isInteger(orderId)) {
     return NextResponse.json({ error: "ID không hợp lệ" }, { status: 400 });
+  }
+
+  const existing = await getPlanOrder(orderId);
+  if (!existing) {
+    return NextResponse.json({ error: "Không tìm thấy" }, { status: 404 });
+  }
+
+  const denied = assertCarrierEdit(session, existing.plan_date);
+  if (denied) return denied;
+
+  if (
+    session.role === "carrier" &&
+    existing.carrier_id &&
+    existing.carrier_id !== session.carrierId
+  ) {
+    return forbidden("Không được sửa kế hoạch của nhà vận tải khác");
   }
 
   let body: unknown;
@@ -71,7 +102,28 @@ export async function PUT(
     );
   }
 
-  const order = await updatePlanOrder(orderId, input);
+  const editDenied = assertCarrierEdit(session, input.planDate);
+  if (editDenied) return editDenied;
+
+  const enriched: PlanOrderInput = {
+    ...input,
+    carrierId:
+      session.role === "carrier"
+        ? session.carrierId
+        : existing.carrier_id,
+  };
+
+  try {
+    await validateCarrierPlanInput(
+      session,
+      enriched,
+      existing.vehicle_plate
+    );
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message }, { status: 400 });
+  }
+
+  const order = await updatePlanOrder(orderId, enriched);
   if (!order) {
     return NextResponse.json({ error: "Không tìm thấy" }, { status: 404 });
   }
@@ -79,14 +131,36 @@ export async function PUT(
 }
 
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const session = await getSessionFromRequest(req);
+  if (session.role !== "warehouse" && session.role !== "carrier") {
+    return forbidden();
+  }
+
   const { id } = await params;
   const orderId = Number(id);
   if (!Number.isInteger(orderId)) {
     return NextResponse.json({ error: "ID không hợp lệ" }, { status: 400 });
   }
+
+  const existing = await getPlanOrder(orderId);
+  if (!existing) {
+    return NextResponse.json({ error: "Không tìm thấy" }, { status: 404 });
+  }
+
+  const denied = assertCarrierEdit(session, existing.plan_date);
+  if (denied) return denied;
+
+  if (
+    session.role === "carrier" &&
+    existing.carrier_id &&
+    existing.carrier_id !== session.carrierId
+  ) {
+    return forbidden("Không được xóa kế hoạch của nhà vận tải khác");
+  }
+
   const removed = await deletePlanOrder(orderId);
   if (!removed) {
     return NextResponse.json({ error: "Không tìm thấy" }, { status: 404 });

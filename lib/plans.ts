@@ -1,5 +1,11 @@
 import { dbAll, dbGet, dbRun } from "./db";
+import { getCarrierGates } from "./config";
+import {
+  getAvailableSlotsForCarrier,
+  getOccupiedSlotMinutes,
+} from "./slots";
 import { minutesToShift, parseTimeToMinutes } from "./plan-parse";
+import type { PortalSession } from "./types";
 import {
   DriverTruckOption,
   PlanDayView,
@@ -30,8 +36,8 @@ async function insertPlanOrder(
   const info = await dbRun(
     `INSERT INTO plan_orders (
        plan_date, gate_code, expected_time, expected_minutes, shift,
-       order_code, tonnage, vehicle_plate, driver_name, source
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       order_code, tonnage, vehicle_plate, driver_name, source, carrier_id
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       input.planDate,
       input.gateCode.trim(),
@@ -43,9 +49,66 @@ async function insertPlanOrder(
       normalizePlate(input.vehiclePlate),
       input.driverName?.trim() || null,
       source,
+      input.carrierId ?? null,
     ]
   );
   return (await getPlanOrder(Number(info.lastInsertRowid)))!;
+}
+
+export async function validateCarrierPlanInput(
+  session: PortalSession,
+  input: PlanOrderInput,
+  excludePlate?: string | null
+): Promise<void> {
+  if (session.role !== "carrier" || !session.carrierId) return;
+
+  const gates = await getCarrierGates(session.carrierId);
+  const gate = gates.find((g) => g.code === input.gateCode.trim());
+  if (!gate) {
+    throw new Error("Cổng không được phép cho nhà vận tải này");
+  }
+
+  const { isGateOpenOnDate } = await import("./slots");
+  if (!isGateOpenOnDate(gate, input.planDate)) {
+    throw new Error("Cổng không mở ngày này");
+  }
+
+  const timeParsed = parseTimeToMinutes(input.expectedTime);
+  if (!timeParsed) throw new Error("Giờ dự kiến không hợp lệ");
+
+  const available = await getAvailableSlotsForCarrier(
+    input.planDate,
+    session.carrierId,
+    gate,
+    excludePlate ?? input.vehiclePlate
+  );
+  if (!available.some((s) => s.minutes === timeParsed.minutes)) {
+    throw new Error("Khung giờ không khả dụng hoặc đã có xe đăng ký");
+  }
+
+  if (input.vehiclePlate) {
+    const occupied = await getOccupiedSlotMinutes(
+      input.planDate,
+      input.gateCode.trim(),
+      input.vehiclePlate
+    );
+    if (occupied.has(timeParsed.minutes)) {
+      throw new Error("Khung giờ này đã có xe khác đăng ký");
+    }
+  }
+}
+
+export async function createPlanOrderWithAuth(
+  session: PortalSession,
+  input: PlanOrderInput
+): Promise<PlanOrderRow> {
+  const enriched: PlanOrderInput = {
+    ...input,
+    carrierId:
+      session.role === "carrier" ? session.carrierId : input.carrierId ?? null,
+  };
+  await validateCarrierPlanInput(session, enriched);
+  return createPlanOrder(enriched);
 }
 
 export async function getPlanOrder(id: number): Promise<PlanOrderRow | null> {
@@ -57,8 +120,20 @@ export async function getPlanOrder(id: number): Promise<PlanOrderRow | null> {
 }
 
 export async function listPlanOrdersByDate(
-  date: string
+  date: string,
+  carrierId?: number | null
 ): Promise<PlanOrderRow[]> {
+  if (carrierId) {
+    const gates = await getCarrierGates(carrierId);
+    const codes = gates.map((g) => g.code);
+    if (codes.length === 0) return [];
+    const placeholders = codes.map(() => "?").join(",");
+    return dbAll<PlanOrderRow>(
+      `SELECT * FROM plan_orders WHERE plan_date = ? AND gate_code IN (${placeholders})
+       ORDER BY expected_minutes ASC, gate_code ASC, id ASC`,
+      [date, ...codes]
+    );
+  }
   return dbAll<PlanOrderRow>(
     `SELECT * FROM plan_orders WHERE plan_date = ?
      ORDER BY expected_minutes ASC, gate_code ASC, id ASC`,
@@ -96,7 +171,8 @@ export async function updatePlanOrder(
   await dbRun(
     `UPDATE plan_orders SET
        plan_date = ?, gate_code = ?, expected_time = ?, expected_minutes = ?,
-       shift = ?, order_code = ?, tonnage = ?, vehicle_plate = ?, driver_name = ?
+       shift = ?, order_code = ?, tonnage = ?, vehicle_plate = ?, driver_name = ?,
+       carrier_id = COALESCE(?, carrier_id)
      WHERE id = ?`,
     [
       input.planDate,
@@ -108,6 +184,7 @@ export async function updatePlanOrder(
       input.tonnage ?? null,
       normalizePlate(input.vehiclePlate),
       input.driverName?.trim() || null,
+      input.carrierId ?? null,
       id,
     ]
   );
@@ -361,8 +438,11 @@ function buildTruckQueue(
   );
 }
 
-export async function getPlanDayView(date: string): Promise<PlanDayView> {
-  const orders = await listPlanOrdersByDate(date);
+export async function getPlanDayView(
+  date: string,
+  carrierId?: number | null
+): Promise<PlanDayView> {
+  const orders = await listPlanOrdersByDate(date, carrierId);
   const allSessions = await listSessions();
   const sessions = sessionsForDate(allSessions, date);
   return {

@@ -18,6 +18,10 @@ const HEADER_MAP: Record<string, string> = {
   "ma don": "orderCode",
   "mã đơn": "orderCode",
   "mã đơn hàng": "orderCode",
+  "don/lenh": "orderCode",
+  "don lenh": "orderCode",
+  "đơn/lệnh": "orderCode",
+  "đơn lệnh": "orderCode",
   sotan: "tonnage",
   "số tấn": "tonnage",
   "so tan": "tonnage",
@@ -90,8 +94,14 @@ export function parseTimeToMinutes(value: unknown): {
   return { label: formatTimeLabel(h, m), minutes: h * 60 + m };
 }
 
-function formatTimeLabel(h: number, m: number): string {
+export function formatTimeLabel(h: number, m: number): string {
   return m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, "0")}`;
+}
+
+export function minutesToTimeLabel(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return formatTimeLabel(h, m);
 }
 
 export function minutesToShift(minutes: number): PlanShift {
@@ -110,18 +120,26 @@ export interface RawSheetRow {
   [key: string]: unknown;
 }
 
+export interface ParseSheetOptions {
+  requireGateTime?: boolean;
+}
+
 export function parseSheetRows(
   headers: string[],
   rows: RawSheetRow[],
-  defaultDate?: string
+  defaultDate?: string,
+  opts?: ParseSheetOptions
 ) {
+  const requireGateTime = opts?.requireGateTime !== false;
   const headerByField: Record<string, string> = {};
   headers.forEach((h) => {
     const field = mapHeaderToField(h);
     if (field && headerByField[field] === undefined) headerByField[field] = h;
   });
 
-  const required = ["gateCode", "expectedTime", "orderCode"];
+  const required = requireGateTime
+    ? ["gateCode", "expectedTime", "orderCode"]
+    : ["orderCode"];
   const missing = required.filter((f) => headerByField[f] === undefined);
 
   return rows.map((row, index) => {
@@ -148,9 +166,11 @@ export function parseSheetRows(
     const vehiclePlate = String(get("vehiclePlate") ?? "").trim() || null;
     const driverName = String(get("driverName") ?? "").trim() || null;
 
-    if (!gateCode) errors.push("Thiếu cổng");
-    if (!timeParsed) errors.push("Giờ không hợp lệ");
-    if (!orderCode) errors.push("Thiếu mã đơn");
+    if (requireGateTime) {
+      if (!gateCode) errors.push("Thiếu cổng");
+      if (!timeParsed) errors.push("Giờ không hợp lệ");
+    }
+    if (!orderCode) errors.push("Thiếu đơn/lệnh");
     if (tonnage != null && Number.isNaN(tonnage)) errors.push("Số tấn không hợp lệ");
 
     return {

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { todayDateString } from "@/lib/plan-parse";
+import { assertWarehouse, getSessionFromRequest } from "@/lib/api-auth";
 import { importPlanOrders } from "@/lib/plans";
 import type { PlanOrderInput } from "@/lib/types";
 
@@ -7,6 +8,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
+  const session = await getSessionFromRequest(req);
+  const denied = assertWarehouse(session);
+  if (denied) return denied;
+
   let body: unknown;
   try {
     body = await req.json();

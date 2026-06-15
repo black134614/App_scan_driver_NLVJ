@@ -75,6 +75,59 @@ export type TruckQueueStatus =
   | "xong"
   | "phat_sinh";
 
+export type PortalRole = "warehouse" | "carrier" | "driver" | "anonymous";
+
+export interface PortalSession {
+  role: PortalRole;
+  carrierId: number | null;
+  carrierCode: string | null;
+  carrierName: string | null;
+}
+
+export interface CarrierRow {
+  id: number;
+  code: string;
+  name: string;
+  token: string;
+  active: number;
+  created_at: string;
+}
+
+export interface GateRow {
+  id: number;
+  code: string;
+  name: string;
+  start_minutes: number;
+  end_minutes: number;
+  load_minutes: number;
+  days_mask: number;
+  active: number;
+  created_at: string;
+}
+
+export interface CarrierGateRow {
+  id: number;
+  carrier_id: number;
+  gate_id: number;
+}
+
+export interface CarrierHiddenSlotRow {
+  id: number;
+  carrier_id: number;
+  gate_id: number;
+  slot_minutes: number;
+}
+
+export interface PortalLinkRow {
+  kind: string;
+  token: string;
+}
+
+export interface TimeSlot {
+  minutes: number;
+  label: string;
+}
+
 export interface PlanOrderRow {
   id: number;
   plan_date: string;
@@ -87,6 +140,7 @@ export interface PlanOrderRow {
   vehicle_plate: string | null;
   driver_name: string | null;
   source: PlanSource;
+  carrier_id: number | null;
   created_at: string;
 }
 
@@ -99,6 +153,7 @@ export interface PlanOrderInput {
   vehiclePlate?: string | null;
   driverName?: string | null;
   source?: PlanSource;
+  carrierId?: number | null;
 }
 
 export interface ParsedPlanRow {

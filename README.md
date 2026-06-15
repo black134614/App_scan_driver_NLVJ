@@ -10,7 +10,8 @@ Web app theo dõi tài xế xuất hàng: tài xế quét QR cổng bằng camer
   3. Quét **đơn hàng xuất thực tế** (kho), chặn trùng, xóa đơn sai.
   4. Bấm **Bắt đầu xuất hàng** (ước tính 30 phút).
   5. Bấm **Xuất xong**.
-- **Kế hoạch vận tải (`/ke-hoach`)** – import Excel/CSV có preview, hoặc nhập tay; sửa/xóa kế hoạch theo ngày.
+- **Kế hoạch vận tải (`/ke-hoach`)** – import Excel/CSV (kho), nhập tay với dropdown cổng & khung giờ; export Excel theo ngày.
+- **Cấu hình (`/cau-hinh`)** – kho: nhà vận tải, cổng, phân quyền cổng, ẩn/hiện khung giờ, link truy cập.
 - **Dashboard kế hoạch xuất (`/ke-hoach/dashboard`)** – lưới cổng × giờ giống Excel, thống kê tấn/lệnh/xe (đã lấy / còn lại), hàng đợi xe.
 - **Dashboard kho (`/dashboard`)** – theo dõi cổng/xe realtime, lọc, phân trang, xuất Excel.
 - **Quản lý ẩn (`/ql-du-lieu`)** – CRUD lịch sử (PIN bảo vệ).
@@ -30,6 +31,22 @@ npm run dev
 
 Mở http://localhost:3000 (tài xế), http://localhost:3000/ke-hoach (kế hoạch VT), http://localhost:3000/ke-hoach/dashboard (dashboard KH), http://localhost:3000/dashboard (kho).
 
+Mở http://localhost:3000. Dùng link truy cập tại `/cau-hinh` (tab Link) để phân quyền theo vai trò.
+
+## Phân quyền theo link
+
+Mở `/r/{token}` — hệ thống lưu cookie và chuyển hướng theo vai trò:
+
+| Vai trò | Link | Trang được dùng |
+| --- | --- | --- |
+| **Kho** | `portal_links` kind `warehouse` (mặc định = `ADMIN_SECRET`) | Tất cả + `/cau-hinh` + `/ql-du-lieu` |
+| **Nhà vận tải** | Token riêng mỗi NVT (`/r/{token}`) | Tài xế, Kế hoạch VT, Dashboard KH |
+| **Tài xế** | `portal_links` kind `driver` | Tài xế, Dashboard KH |
+
+**Khung giờ:** mỗi cổng cấu hình giờ bắt đầu/kết thúc + thời gian load → sinh các mốc (5h00, 5h30...). Có thể ẩn từng mốc theo NVT. **1 xe / 1 cổng / 1 khung giờ / ngày.**
+
+**Khóa ngày cũ:** nhà vận tải không sửa/xóa kế hoạch ngày đã qua (kho vẫn được).
+
 ## Import kế hoạch vận tải (Excel/CSV)
 
 Mỗi **dòng = 1 đơn/lệnh**. Header dòng đầu:
@@ -39,19 +56,21 @@ Mỗi **dòng = 1 đơn/lệnh**. Header dòng đầu:
 | Ngày | Có | 2026-06-13 hoặc 13/06/2026 | Ngày kế hoạch |
 | Cổng | Có | Cua 3, TH | Cổng vào → cột lưới |
 | Giờ | Có | 6h30, 7h | Giờ dự kiến → hàng lưới |
-| Mã đơn | Có | HCM1, TINH-47 | Mã đơn/lệnh |
+| Đơn/Lệnh | Có | HCM1, TINH-47 | Mã đơn/lệnh |
 | Số tấn | Không | 1.2 | Số tấn (thống kê) |
 | Số xe | Không | 51C-123.45 | Biển số → tài xế chọn xe |
 | Tài xế | Không | Nguyen Van A | Tên tài xế |
 
-App cũng đọc được tên cột không dấu: `Ngay`, `Cong`, `Gio`, `MaDon`, `SoTan`, `SoXe`, `TaiXe`.
+App cũng đọc được: `MaDon`, `Mã đơn`, `Ngay`, `Cong`, `Gio`...
+
+**Export:** trên `/ke-hoach` bấm **Export Excel** hoặc `GET /api/plans/export?date=`.
 
 **Phân ca:** giờ < 12:00 = sáng, >= 12:00 = chiều.
 
 **Mẫu nhanh (copy vào Excel):**
 
 ```
-Ngày       | Cổng   | Giờ  | Mã đơn   | Số tấn | Số xe     | Tài xế
+Ngày       | Cổng   | Giờ  | Đơn/Lệnh | Số tấn | Số xe     | Tài xế
 2026-06-13 | Cua 3  | 6h30 | HCM1     | 1.2    | 51C-111   | Tran A
 2026-06-13 | Cua 3  | 6h30 | HCM2     | 0.8    | 51C-111   | Tran A
 2026-06-13 | Cua 5  | 7h   | TINH-47  | 2.0    | 51C-222   | Le B
