@@ -44,6 +44,9 @@ const CELL_COLOR: Record<PlanGridCell["status"], string> = {
   done: "bg-green-100 border-green-600",
 };
 
+/** Chiều cao cố định mỗi thẻ xe — các ô cùng hàng đồng đều */
+const PLAN_CARD_H = "h-[76px]";
+
 function carrierGroups(
   gates: string[],
   gateCarriers: Record<string, string>
@@ -466,12 +469,12 @@ function GridSection({
         </div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[800px] border-collapse text-sm">
+        <table className="w-full min-w-[800px] table-fixed border-collapse text-sm">
           <thead>
             <tr>
               <th
                 rowSpan={2}
-                className="sticky left-0 z-20 border border-slate-400 bg-slate-300 px-3 py-2.5 text-left text-sm font-bold text-slate-900 align-middle"
+                className="sticky left-0 z-20 w-[72px] border border-slate-400 bg-slate-300 px-2 py-2.5 text-left text-sm font-bold text-slate-900 align-middle"
               >
                 Khung TG
               </th>
@@ -501,7 +504,7 @@ function GridSection({
                   <th
                     key={gate}
                     title={gate}
-                    className={`min-w-[110px] border px-2 py-2.5 text-center text-sm font-bold ${colors.gateBg} ${colors.gateText} ${colors.border}`}
+                    className={`w-[120px] border px-2 py-2.5 text-center text-sm font-bold ${colors.gateBg} ${colors.gateText} ${colors.border}`}
                   >
                     {gateNames[gate] ?? gate}
                   </th>
@@ -510,67 +513,84 @@ function GridSection({
             </tr>
           </thead>
           <tbody>
-            {times.map((time) => (
+            {times.map((time) => {
+              const rowCells = grid.gates.map((gate) =>
+                (grid.cells[gate]?.[time] ?? []).filter(
+                  (c) => c.order.shift === shift
+                )
+              );
+              const maxCards = Math.max(
+                1,
+                ...rowCells.map((cells) => cells.length)
+              );
+              const rowMinH = maxCards * 76 + (maxCards - 1) * 4 + 12;
+
+              return (
               <tr key={time}>
-                <td className="sticky left-0 z-10 border border-slate-400 bg-slate-200 px-3 py-2.5 text-sm font-bold text-slate-900 whitespace-nowrap">
+                <td className="sticky left-0 z-10 border border-slate-400 bg-slate-200 px-2 py-2.5 text-sm font-bold text-slate-900 whitespace-nowrap align-middle">
                   {time}
                 </td>
-                {grid.gates.map((gate) => {
-                  const cells = (grid.cells[gate]?.[time] ?? []).filter(
-                    (c) => c.order.shift === shift
-                  );
+                {grid.gates.map((gate, gateIdx) => {
+                  const cells = rowCells[gateIdx];
                   return (
                     <td
                       key={`${gate}-${time}`}
                       className="border border-slate-300 p-1.5 align-top bg-slate-50/50"
+                      style={{ minHeight: rowMinH }}
                     >
-                      <div className="flex min-h-[60px] flex-col gap-1">
+                      <div
+                        className="flex h-full flex-col gap-1"
+                        style={{ minHeight: rowMinH - 12 }}
+                      >
                         {cells.length === 0 ? (
-                          <span className="flex h-full items-center justify-center rounded border border-dashed border-slate-400 text-xs font-medium text-slate-500">
+                          <div
+                            className="flex w-full flex-1 items-center justify-center rounded border border-dashed border-slate-400 text-xs font-medium text-slate-500"
+                          >
                             Trống
-                          </span>
+                          </div>
                         ) : (
-                          cells.map(({ order, status }) => (
-                            <div
+                          cells.map(({ order, status }) => {
+                            const clickable = Boolean(order.vehicle_plate);
+                            return (
+                            <button
                               key={order.id}
-                              className={`rounded-lg border-2 px-2 py-1.5 text-xs leading-snug ${CELL_COLOR[status]}`}
-                              title={`${order.order_code}${order.vehicle_plate ? ` · ${order.vehicle_plate}` : ""}${order.driver_name ? ` · ${order.driver_name}` : ""}`}
+                              type="button"
+                              disabled={!clickable}
+                              onClick={() =>
+                                clickable &&
+                                onDetail(order.vehicle_plate!)
+                              }
+                              className={`flex w-full flex-col justify-center rounded-lg border-2 px-2 py-1.5 text-left text-xs leading-snug ${PLAN_CARD_H} ${CELL_COLOR[status]} ${
+                                clickable
+                                  ? "cursor-pointer transition hover:brightness-[0.97] hover:ring-2 hover:ring-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+                                  : "cursor-default"
+                              }`}
+                              title={
+                                clickable
+                                  ? "Bấm để xem chi tiết"
+                                  : `${order.order_code}${order.driver_name ? ` · ${order.driver_name}` : ""}`
+                              }
                             >
-                              {order.vehicle_plate ? (
-                                <div className="flex items-center justify-between gap-1">
-                                  <div className="truncate text-sm font-extrabold text-slate-900">
-                                    {order.vehicle_plate}
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => onDetail(order.vehicle_plate!)}
-                                    className="shrink-0 rounded bg-blue-700 px-1.5 py-0.5 text-[10px] font-bold text-white hover:bg-blue-800"
-                                  >
-                                    Chi tiết
-                                  </button>
-                                </div>
-                              ) : (
-                                <div className="truncate text-sm font-semibold text-slate-600">
-                                  Chưa gán xe
-                                </div>
-                              )}
+                              <div className="truncate text-sm font-extrabold text-slate-900">
+                                {order.vehicle_plate ?? "Chưa gán xe"}
+                              </div>
                               <div className="truncate font-medium text-slate-800">
                                 {order.order_code}
                               </div>
-                              {order.driver_name && (
-                                <div className="truncate text-slate-600">
-                                  {order.driver_name}
-                                </div>
-                              )}
-                            </div>
-                          ))
+                              <div className="truncate text-slate-600">
+                                {order.driver_name || "\u00A0"}
+                              </div>
+                            </button>
+                            );
+                          })
                         )}
                       </div>
                     </td>
                   );
                 })}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
