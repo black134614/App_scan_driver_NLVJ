@@ -125,6 +125,11 @@ async function initSchema() {
       "ALTER TABLE plan_orders ADD COLUMN carrier_id INTEGER REFERENCES carriers(id)"
     );
   }
+  if (!colNames.includes("manual_picked")) {
+    await db.execute(
+      "ALTER TABLE plan_orders ADD COLUMN manual_picked INTEGER NOT NULL DEFAULT 0"
+    );
+  }
 
   const gateColResult = await db.execute("PRAGMA table_info(gates)");
   const gateColNames = (gateColResult.rows as unknown as { name: string }[]).map(

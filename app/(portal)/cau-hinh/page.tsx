@@ -61,8 +61,7 @@ export default function CauHinhPage() {
   } | null>(null);
   const [confirmLoading, setConfirmLoading] = useState(false);
   const initialLoaded = useRef(false);
-  const assignSeq = useRef(0);
-  const prevTabRef = useRef<Tab>(tab);
+  const assignFetchFor = useRef<number | null>(null);
 
   const [newCarrier, setNewCarrier] = useState({ code: "", name: "" });
   const [newGate, setNewGate] = useState<{
@@ -115,8 +114,18 @@ export default function CauHinhPage() {
       const cData = await cRes.json();
       const gData = await gRes.json();
       const lData = await lRes.json();
-      setCarriers(cData.carriers ?? []);
-      setGates(gData.gates ?? []);
+      setCarriers(
+        (cData.carriers ?? []).map((c: CarrierRow) => ({
+          ...c,
+          id: Number(c.id),
+        }))
+      );
+      setGates(
+        (gData.gates ?? []).map((g: GateRow) => ({
+          ...g,
+          id: Number(g.id),
+        }))
+      );
       setLinks(lData.links ?? []);
     } catch (e) {
       setError((e as Error).message);
@@ -130,46 +139,54 @@ export default function CauHinhPage() {
     load();
   }, [load]);
 
-  useEffect(() => {
-    if (tab === "assign" && prevTabRef.current !== "assign" && assignCarrierId) {
-      void loadAssignment(assignCarrierId);
+  const fetchAssignment = useCallback(async (carrierId: number) => {
+    const id = Number(carrierId);
+    if (!Number.isInteger(id) || id <= 0) return;
+
+    assignFetchFor.current = id;
+    setAssignCarrierId(id);
+    setAssignLoading(true);
+    setSlotGateId(null);
+    setSlotConfig({ slots: [], hidden: [] });
+    setError("");
+
+    try {
+      const res = await fetch(
+        `/api/config/carrier-gates?carrierId=${id}&_=${Date.now()}`,
+        { cache: "no-store", credentials: "same-origin" }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (assignFetchFor.current !== id) return;
+
+      if (!res.ok) {
+        setAssignedGateIds([]);
+        setError(data.error ?? "Không tải được phân quyền cổng");
+        return;
+      }
+
+      const gateIds = (Array.isArray(data.gateIds) ? data.gateIds : [])
+        .map((gid: unknown) => Number(gid))
+        .filter((gid: number) => Number.isInteger(gid) && gid > 0);
+
+      setAssignedGateIds(gateIds);
+    } catch {
+      if (assignFetchFor.current === id) {
+        setAssignedGateIds([]);
+        setError("Không tải được phân quyền cổng — kiểm tra kết nối");
+      }
+    } finally {
+      if (assignFetchFor.current === id) setAssignLoading(false);
     }
-    prevTabRef.current = tab;
-  }, [tab, assignCarrierId]);
+  }, []);
+
+  const selectAssignCarrier = (carrierId: number) => {
+    clearFeedback();
+    void fetchAssignment(carrierId);
+  };
 
   const clearFeedback = () => {
     setMessage("");
     setError("");
-  };
-
-  const loadAssignment = async (carrierId: number) => {
-    const seq = ++assignSeq.current;
-    setAssignLoading(true);
-    setAssignCarrierId(carrierId);
-    setAssignedGateIds([]);
-    setSlotGateId(null);
-    setSlotConfig({ slots: [], hidden: [] });
-    setError("");
-    try {
-      const res = await fetch(
-        `/api/config/carrier-gates?carrierId=${carrierId}`,
-        { cache: "no-store" }
-      );
-      const data = await res.json();
-      if (seq !== assignSeq.current) return;
-      if (!res.ok) {
-        setError(data.error ?? "Không tải được phân quyền");
-        return;
-      }
-      const gateIds = (data.gateIds ?? [])
-        .map((id: unknown) => Number(id))
-        .filter((id: number) => Number.isInteger(id) && id > 0);
-      setAssignedGateIds(gateIds);
-    } catch {
-      if (seq === assignSeq.current) setError("Không tải được phân quyền");
-    } finally {
-      if (seq === assignSeq.current) setAssignLoading(false);
-    }
   };
 
   const loadSlots = async (carrierId: number, gateId: number) => {
@@ -384,7 +401,15 @@ export default function CauHinhPage() {
       return;
     }
     setMessage("Đã lưu phân quyền cổng");
-    await loadAssignment(assignCarrierId);
+    if (Array.isArray(data.gateIds)) {
+      setAssignedGateIds(
+        data.gateIds
+          .map((gid: unknown) => Number(gid))
+          .filter((gid: number) => Number.isInteger(gid) && gid > 0)
+      );
+    } else {
+      await fetchAssignment(assignCarrierId);
+    }
     } finally {
       setSavingAssignment(false);
     }
@@ -806,11 +831,11 @@ export default function CauHinhPage() {
                 <button
                   key={c.id}
                   type="button"
-                  onClick={() => loadAssignment(c.id)}
+                  onClick={() => selectAssignCarrier(Number(c.id))}
                   className={`w-full rounded-lg border px-3 py-2 text-left text-sm ${
-                    assignCarrierId === c.id
-                      ? "border-blue-500 bg-blue-50"
-                      : "border-slate-200"
+                    Number(assignCarrierId) === Number(c.id)
+                      ? "border-blue-500 bg-blue-50 ring-1 ring-blue-200"
+                      : "border-slate-200 hover:border-slate-300 hover:bg-slate-50"
                   }`}
                 >
                   <span className="font-semibold">{c.code}</span> — {c.name}
@@ -825,34 +850,49 @@ export default function CauHinhPage() {
           {assignCarrierId && (
             <div className="space-y-4">
               <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                <h2 className="mb-3 font-bold">Cổng được phép</h2>
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="font-bold">Cổng được phép</h2>
+                  {!assignLoading && assignedGateIds.length > 0 ? (
+                    <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">
+                      {assignedGateIds.length} cổng
+                    </span>
+                  ) : null}
+                </div>
                 {assignLoading ? (
-                  <p className="mb-3 text-sm text-slate-400">
+                  <p className="mb-3 text-sm text-slate-500">
                     Đang tải cổng đã phân quyền...
                   </p>
+                ) : assignedGateIds.length === 0 ? (
+                  <p className="mb-3 text-sm text-amber-700">
+                    Chưa phân quyền cổng nào — tick cổng rồi bấm Lưu
+                  </p>
                 ) : null}
-                <div className="space-y-2">
+                <div
+                  className={`space-y-2 ${assignLoading ? "pointer-events-none opacity-50" : ""}`}
+                >
                   {gates.length === 0 ? (
                     <p className="text-sm text-slate-400">Chưa có cổng</p>
                   ) : (
                   gates.map((g) => (
                     <label
                       key={g.id}
-                      className={`flex items-center gap-2 text-sm ${
-                        assignLoading ? "opacity-50" : ""
-                      }`}
+                      className="flex items-center gap-2 rounded-lg border border-slate-100 px-2 py-1.5 text-sm hover:bg-slate-50"
                     >
                       <input
                         type="checkbox"
-                        className="h-4 w-4 accent-blue-600"
-                        checked={assignedGateIds.includes(g.id)}
-                        disabled={assignLoading}
+                        className="h-4 w-4 shrink-0 accent-blue-600"
+                        checked={assignedGateIds.includes(Number(g.id))}
                         onChange={(e) => {
+                          const gateId = Number(g.id);
                           if (e.target.checked) {
-                            setAssignedGateIds([...assignedGateIds, g.id]);
+                            setAssignedGateIds((prev) =>
+                              prev.includes(gateId)
+                                ? prev
+                                : [...prev, gateId]
+                            );
                           } else {
-                            setAssignedGateIds(
-                              assignedGateIds.filter((id) => id !== g.id)
+                            setAssignedGateIds((prev) =>
+                              prev.filter((id) => id !== gateId)
                             );
                           }
                         }}

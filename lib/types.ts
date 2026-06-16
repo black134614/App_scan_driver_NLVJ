@@ -142,6 +142,8 @@ export interface PlanOrderRow {
   driver_name: string | null;
   source: PlanSource;
   carrier_id: number | null;
+  /** 0 = tự động, 1 = đánh dấu đã lấy, -1 = hủy/ghi đè trạng thái đã lấy */
+  manual_picked: number;
   created_at: string;
 }
 

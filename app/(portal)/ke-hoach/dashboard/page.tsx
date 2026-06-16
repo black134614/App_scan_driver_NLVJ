@@ -44,7 +44,7 @@ const CELL_COLOR: Record<PlanGridCell["status"], string> = {
   done: "bg-green-100 border-green-600",
 };
 
-/** Chiều cao cố định mỗi thẻ xe — các ô cùng hàng đồng đều */
+/** Chiều cao cố định mỗi thẻ xe — rộng full ô cổng */
 const PLAN_CARD_H = "h-[76px]";
 
 function carrierGroups(
@@ -85,7 +85,8 @@ function timesForShift(grid: PlanGrid, shift: PlanShift): string[] {
 }
 
 export default function KeHoachDashboardPage() {
-  const { carrierName } = usePortal();
+  const { carrierName, role } = usePortal();
+  const canManagePickup = role === "warehouse";
   const [date, setDate] = useState(todayDateString());
   const [view, setView] = useState<PlanDayView | null>(null);
   const [loading, setLoading] = useState(true);
@@ -95,6 +96,8 @@ export default function KeHoachDashboardPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [filterCarrier, setFilterCarrier] = useState("");
   const [filterGate, setFilterGate] = useState("");
+  const [pickupUpdatingId, setPickupUpdatingId] = useState<number | null>(null);
+  const [pickupError, setPickupError] = useState<string | null>(null);
   const [detailData, setDetailData] = useState<{
     plan: PlanOrderRow[];
     session: SessionWithOrders | null;
@@ -174,6 +177,31 @@ export default function KeHoachDashboardPage() {
   const closeDetail = () => {
     setDetailPlate(null);
     setDetailData(null);
+  };
+
+  const updatePickupStatus = async (
+    orderId: number,
+    action: "mark_picked" | "clear_picked"
+  ) => {
+    setPickupUpdatingId(orderId);
+    setPickupError(null);
+    try {
+      const res = await fetch(`/api/plans/${orderId}/picked`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setPickupError(data.error ?? "Không cập nhật được trạng thái");
+        return;
+      }
+      await load();
+    } catch {
+      setPickupError("Lỗi kết nối — thử lại");
+    } finally {
+      setPickupUpdatingId(null);
+    }
   };
 
   const stats = view?.stats;
@@ -277,7 +305,10 @@ export default function KeHoachDashboardPage() {
             gateCarriers={gateCarriers}
             gateNames={gateNames}
             carrierColors={carrierColors}
+            canManagePickup={canManagePickup}
+            pickupUpdatingId={pickupUpdatingId}
             onDetail={openDetail}
+            onUpdatePickup={updatePickupStatus}
           />
           <GridSection
             title="Ca chiều"
@@ -287,7 +318,10 @@ export default function KeHoachDashboardPage() {
             gateCarriers={gateCarriers}
             gateNames={gateNames}
             carrierColors={carrierColors}
+            canManagePickup={canManagePickup}
+            pickupUpdatingId={pickupUpdatingId}
             onDetail={openDetail}
+            onUpdatePickup={updatePickupStatus}
           />
         </>
       )}
@@ -401,6 +435,12 @@ export default function KeHoachDashboardPage() {
         </div>
       )}
 
+      {pickupError && (
+        <div className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">
+          {pickupError}
+        </div>
+      )}
+
       {statsOnSide ? (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_280px]">
           <div className="min-w-0 space-y-4">{gridBlocks}</div>
@@ -438,7 +478,10 @@ function GridSection({
   gateCarriers,
   gateNames,
   carrierColors,
+  canManagePickup,
+  pickupUpdatingId,
   onDetail,
+  onUpdatePickup,
 }: {
   title: string;
   shift: PlanShift;
@@ -447,7 +490,13 @@ function GridSection({
   gateCarriers: Record<string, string>;
   gateNames: Record<string, string>;
   carrierColors: Record<string, string>;
+  canManagePickup: boolean;
+  pickupUpdatingId: number | null;
   onDetail: (plate: string) => void;
+  onUpdatePickup: (
+    orderId: number,
+    action: "mark_picked" | "clear_picked"
+  ) => void;
 }) {
   if (times.length === 0) return null;
   const groups = carrierGroups(grid.gates, gateCarriers);
@@ -504,7 +553,7 @@ function GridSection({
                   <th
                     key={gate}
                     title={gate}
-                    className={`w-[120px] border px-2 py-2.5 text-center text-sm font-bold ${colors.gateBg} ${colors.gateText} ${colors.border}`}
+                    className={`w-[136px] border px-2 py-2.5 text-center text-sm font-bold ${colors.gateBg} ${colors.gateText} ${colors.border}`}
                   >
                     {gateNames[gate] ?? gate}
                   </th>
@@ -543,46 +592,21 @@ function GridSection({
                         style={{ minHeight: rowMinH - 12 }}
                       >
                         {cells.length === 0 ? (
-                          <div
-                            className="flex w-full flex-1 items-center justify-center rounded border border-dashed border-slate-400 text-xs font-medium text-slate-500"
-                          >
+                          <div className="flex h-[76px] w-full flex-1 items-center justify-center rounded border border-dashed border-slate-400 text-xs font-medium text-slate-500">
                             Trống
                           </div>
                         ) : (
-                          cells.map(({ order, status }) => {
-                            const clickable = Boolean(order.vehicle_plate);
-                            return (
-                            <button
+                          cells.map(({ order, status }) => (
+                            <PlanVehicleCard
                               key={order.id}
-                              type="button"
-                              disabled={!clickable}
-                              onClick={() =>
-                                clickable &&
-                                onDetail(order.vehicle_plate!)
-                              }
-                              className={`flex w-full flex-col justify-center rounded-lg border-2 px-2 py-1.5 text-left text-xs leading-snug ${PLAN_CARD_H} ${CELL_COLOR[status]} ${
-                                clickable
-                                  ? "cursor-pointer transition hover:brightness-[0.97] hover:ring-2 hover:ring-blue-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-                                  : "cursor-default"
-                              }`}
-                              title={
-                                clickable
-                                  ? "Bấm để xem chi tiết"
-                                  : `${order.order_code}${order.driver_name ? ` · ${order.driver_name}` : ""}`
-                              }
-                            >
-                              <div className="truncate text-sm font-extrabold text-slate-900">
-                                {order.vehicle_plate ?? "Chưa gán xe"}
-                              </div>
-                              <div className="truncate font-medium text-slate-800">
-                                {order.order_code}
-                              </div>
-                              <div className="truncate text-slate-600">
-                                {order.driver_name || "\u00A0"}
-                              </div>
-                            </button>
-                            );
-                          })
+                              order={order}
+                              status={status}
+                              canManagePickup={canManagePickup}
+                              updating={pickupUpdatingId === order.id}
+                              onDetail={onDetail}
+                              onUpdatePickup={onUpdatePickup}
+                            />
+                          ))
                         )}
                       </div>
                     </td>
@@ -595,6 +619,94 @@ function GridSection({
         </table>
       </div>
     </section>
+  );
+}
+
+function PlanVehicleCard({
+  order,
+  status,
+  canManagePickup,
+  updating,
+  onDetail,
+  onUpdatePickup,
+}: {
+  order: PlanOrderRow;
+  status: PlanGridCell["status"];
+  canManagePickup: boolean;
+  updating: boolean;
+  onDetail: (plate: string) => void;
+  onUpdatePickup: (
+    orderId: number,
+    action: "mark_picked" | "clear_picked"
+  ) => void;
+}) {
+  const clickable = Boolean(order.vehicle_plate);
+  const isPicked = status === "done" || status === "in_progress";
+
+  return (
+    <div
+      className={`group relative w-full min-w-0 ${PLAN_CARD_H} ${
+        updating ? "opacity-60" : ""
+      }`}
+    >
+      <button
+        type="button"
+        disabled={!clickable || updating}
+        onClick={() => clickable && onDetail(order.vehicle_plate!)}
+        className={`flex h-full w-full min-w-0 flex-col justify-center rounded-lg border-2 px-2 py-1.5 text-left text-xs leading-snug ${CELL_COLOR[status]} ${
+          clickable
+            ? "cursor-pointer transition focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+            : "cursor-default"
+        }`}
+        title={clickable ? "Bấm để xem chi tiết" : order.order_code}
+      >
+        <div
+          className={`truncate text-sm font-extrabold text-slate-900 ${
+            canManagePickup ? "group-hover:pr-14" : ""
+          }`}
+        >
+          {order.vehicle_plate ?? "Chưa gán xe"}
+        </div>
+        <div className="truncate font-medium text-slate-800">
+          {order.order_code}
+        </div>
+        <div className="truncate text-slate-600">
+          {order.driver_name || "\u00A0"}
+        </div>
+      </button>
+
+      {canManagePickup && !updating ? (
+        <div className="absolute right-1 top-1 z-10 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+          {!isPicked ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onUpdatePickup(order.id, "mark_picked");
+              }}
+              className="rounded border border-green-600 bg-green-50 px-1.5 py-0.5 text-[9px] font-bold leading-none text-green-800 shadow-sm hover:bg-green-100"
+              title="Đánh dấu đã lấy hàng"
+            >
+              ✓ Đã lấy
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onUpdatePickup(order.id, "clear_picked");
+              }}
+              className="rounded border border-slate-400 bg-white px-1.5 py-0.5 text-[9px] font-bold leading-none text-slate-700 shadow-sm hover:bg-slate-50"
+              title="Hủy trạng thái lấy hàng"
+            >
+              ↩ Hủy
+            </button>
+          )}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

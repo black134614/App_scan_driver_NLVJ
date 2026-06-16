@@ -196,6 +196,19 @@ export async function deletePlanOrder(id: number): Promise<boolean> {
   return info.changes > 0;
 }
 
+export async function setPlanOrderManualPicked(
+  id: number,
+  manualPicked: -1 | 0 | 1
+): Promise<PlanOrderRow | null> {
+  const existing = await getPlanOrder(id);
+  if (!existing) return null;
+  await dbRun("UPDATE plan_orders SET manual_picked = ? WHERE id = ?", [
+    manualPicked,
+    id,
+  ]);
+  return getPlanOrder(id);
+}
+
 export async function importPlanOrders(
   date: string,
   inputs: PlanOrderInput[],
@@ -255,6 +268,8 @@ function orderPickedUp(
   sessions: SessionWithOrders[],
   scannedCodes: Set<string>
 ): boolean {
+  if ((order.manual_picked ?? 0) === 1) return true;
+  if ((order.manual_picked ?? 0) === -1) return false;
   if (scannedCodes.has(order.order_code)) return true;
   if (!order.vehicle_plate) return false;
   const session = sessionByPlate(sessions, order.vehicle_plate);
@@ -291,7 +306,7 @@ function computeStats(
     if (plate) {
       if (order.shift === "sang") plannedTrucksMorning.add(plate);
       else plannedTrucksAfternoon.add(plate);
-      if (sessionByPlate(sessions, plate)) {
+      if (orderPickedUp(order, sessions, scannedCodes)) {
         if (order.shift === "sang") pickedTrucksMorning.add(plate);
         else pickedTrucksAfternoon.add(plate);
       }
@@ -325,6 +340,8 @@ function cellStatus(
   order: PlanOrderRow,
   sessions: SessionWithOrders[]
 ): PlanGridCell["status"] {
+  if ((order.manual_picked ?? 0) === 1) return "done";
+  if ((order.manual_picked ?? 0) === -1) return "planned";
   const session = sessionByPlate(sessions, order.vehicle_plate);
   if (!session) return "planned";
   if (session.status === "done") return "done";

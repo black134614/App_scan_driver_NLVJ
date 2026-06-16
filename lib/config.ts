@@ -199,11 +199,13 @@ export async function deleteGate(id: number): Promise<boolean> {
 }
 
 export async function getCarrierGateIds(carrierId: number): Promise<number[]> {
-  const rows = await dbAll<{ gate_id: number }>(
+  const rows = await dbAll<Record<string, unknown>>(
     "SELECT gate_id FROM carrier_gates WHERE carrier_id = ?",
     [carrierId]
   );
-  return rows.map((r) => r.gate_id);
+  return rows
+    .map((r) => Number(r.gate_id))
+    .filter((id) => Number.isInteger(id) && id > 0);
 }
 
 export async function getCarrierGates(

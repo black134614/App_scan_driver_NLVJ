@@ -19,19 +19,26 @@ export async function GET(req: NextRequest) {
   if (denied) return denied;
 
   const carrierId = Number(req.nextUrl.searchParams.get("carrierId"));
-  const gateId = Number(req.nextUrl.searchParams.get("gateId"));
+  const gateIdRaw = req.nextUrl.searchParams.get("gateId");
 
-  if (!Number.isInteger(carrierId)) {
+  if (!Number.isInteger(carrierId) || carrierId <= 0) {
     return NextResponse.json({ error: "Thiếu carrierId" }, { status: 400 });
   }
 
-  if (Number.isInteger(gateId)) {
+  if (gateIdRaw !== null && gateIdRaw !== "") {
+    const gateId = Number(gateIdRaw);
+    if (!Number.isInteger(gateId) || gateId <= 0) {
+      return NextResponse.json({ error: "gateId không hợp lệ" }, { status: 400 });
+    }
     const config = await getCarrierSlotConfig(carrierId, gateId);
     return NextResponse.json(config);
   }
 
   const gateIds = await getCarrierGateIds(carrierId);
-  return NextResponse.json({ gateIds });
+  return NextResponse.json({
+    carrierId,
+    gateIds,
+  });
 }
 
 export async function PUT(req: NextRequest) {
@@ -53,8 +60,12 @@ export async function PUT(req: NextRequest) {
   }
 
   if (body.carrierId && body.gateIds) {
-    await setCarrierGates(body.carrierId, body.gateIds);
-    return NextResponse.json({ ok: true });
+    const gateIds = body.gateIds
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0);
+    await setCarrierGates(body.carrierId, gateIds);
+    const saved = await getCarrierGateIds(body.carrierId);
+    return NextResponse.json({ ok: true, carrierId: body.carrierId, gateIds: saved });
   }
 
   if (
