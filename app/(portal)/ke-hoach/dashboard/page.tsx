@@ -47,24 +47,22 @@ const CELL_COLOR: Record<PlanGridCell["status"], string> = {
 /** Chiều cao cố định mỗi thẻ xe — rộng full ô cổng */
 const PLAN_CARD_H = "h-[76px]";
 
-function carrierGroups(
+/** Nhóm header VT theo cổng liên tiếp — khớp thứ tự cột dữ liệu */
+function carrierHeaderGroups(
   gates: string[],
   gateCarriers: Record<string, string>
 ): Array<{ carrierName: string; gates: string[] }> {
-  const order: string[] = [];
-  const map = new Map<string, string[]>();
+  const groups: Array<{ carrierName: string; gates: string[] }> = [];
   for (const gate of gates) {
     const carrier = gateCarriers[gate]?.trim() || "Chưa gán VT";
-    if (!map.has(carrier)) {
-      map.set(carrier, []);
-      order.push(carrier);
+    const last = groups[groups.length - 1];
+    if (last && last.carrierName === carrier) {
+      last.gates.push(gate);
+    } else {
+      groups.push({ carrierName: carrier, gates: [gate] });
     }
-    map.get(carrier)!.push(gate);
   }
-  return order.map((carrierName) => ({
-    carrierName,
-    gates: map.get(carrierName)!,
-  }));
+  return groups;
 }
 
 function timesForShift(grid: PlanGrid, shift: PlanShift): string[] {
@@ -499,7 +497,7 @@ function GridSection({
   ) => void;
 }) {
   if (times.length === 0) return null;
-  const groups = carrierGroups(grid.gates, gateCarriers);
+  const groups = carrierHeaderGroups(grid.gates, gateCarriers);
   const shiftStyle = SHIFT_SECTION_STYLE[shift];
   return (
     <section
@@ -527,14 +525,14 @@ function GridSection({
               >
                 Khung TG
               </th>
-              {groups.map((g) => {
+              {groups.map((g, idx) => {
                 const colors = carrierColorStyle(
                   g.carrierName,
                   carrierColors[g.carrierName]
                 );
                 return (
                   <th
-                    key={g.carrierName}
+                    key={`${g.carrierName}-${g.gates[0]}-${idx}`}
                     colSpan={g.gates.length}
                     className={`border px-2 py-2 text-center text-xs font-extrabold uppercase tracking-wide ${colors.headerBg} ${colors.headerText} ${colors.border}`}
                   >
@@ -544,12 +542,13 @@ function GridSection({
               })}
             </tr>
             <tr>
-              {groups.flatMap((g) => {
+              {grid.gates.map((gate) => {
+                const carrier = gateCarriers[gate]?.trim() || "Chưa gán VT";
                 const colors = carrierColorStyle(
-                  g.carrierName,
-                  carrierColors[g.carrierName]
+                  carrier,
+                  carrierColors[carrier]
                 );
-                return g.gates.map((gate) => (
+                return (
                   <th
                     key={gate}
                     title={gate}
@@ -557,7 +556,7 @@ function GridSection({
                   >
                     {gateNames[gate] ?? gate}
                   </th>
-                ));
+                );
               })}
             </tr>
           </thead>

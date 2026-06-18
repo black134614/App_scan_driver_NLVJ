@@ -224,10 +224,17 @@ export async function importPlanOrders(
   return { imported: orders.length, orders };
 }
 
+function gateSortKey(code: string): number {
+  const match = code.match(/(\d+)/);
+  return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+}
+
 function buildGrid(orders: PlanOrderRow[]): PlanGrid {
-  const gates = [...new Set(orders.map((o) => o.gate_code))].sort((a, b) =>
-    a.localeCompare(b, "vi")
-  );
+  const gates = [...new Set(orders.map((o) => o.gate_code))].sort((a, b) => {
+    const diff = gateSortKey(a) - gateSortKey(b);
+    if (diff !== 0) return diff;
+    return a.localeCompare(b, "vi");
+  });
   const timeSet = new Map<string, number>();
   for (const o of orders) {
     timeSet.set(o.expected_time, o.expected_minutes);
