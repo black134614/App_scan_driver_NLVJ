@@ -6,6 +6,7 @@ import PageHeader from "@/components/ui/PageHeader";
 import { SkeletonTable } from "@/components/ui/Skeleton";
 import { isPastDate } from "@/lib/access-shared";
 import { isGateOpenOnDate } from "@/lib/gate-weekdays";
+import { validateCarrierImportRows } from "@/lib/plan-import-validate";
 import { parseSheetRows, todayDateString } from "@/lib/plan-parse";
 import { usePortal } from "@/lib/portal-context";
 import { inputCls, tableHeadCls, tableRowHoverCls } from "@/lib/ui";
@@ -29,41 +30,6 @@ interface ManualOrderLine {
   tonnage: string;
 }
 
-interface StagingGroup {
-  groupKey: string;
-  plate: string | null;
-  driverName: string | null;
-  rows: PreviewRow[];
-  gateId: number | "";
-  expectedTime: string;
-}
-
-function buildStagingGroups(rows: PreviewRow[]): StagingGroup[] {
-  const valid = rows.filter((r) => r.errors.length === 0);
-  const map = new Map<string, StagingGroup>();
-  for (const row of valid) {
-    const plate = row.vehiclePlate;
-    const key = plate ?? `__row_${row.rowNumber}`;
-    if (!map.has(key)) {
-      map.set(key, {
-        groupKey: key,
-        plate,
-        driverName: row.driverName,
-        rows: [],
-        gateId: "",
-        expectedTime: "",
-      });
-    }
-    const group = map.get(key)!;
-    group.rows.push(row);
-    if (!group.driverName && row.driverName) {
-      group.driverName = row.driverName;
-    }
-  }
-  return Array.from(map.values());
-}
-
-
 export default function KeHoachPage() {
   const [planDate, setPlanDate] = useState(todayDateString());
   const [orders, setOrders] = useState<PlanOrderRow[]>([]);
@@ -77,9 +43,13 @@ export default function KeHoachPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const carrierFileInputRef = useRef<HTMLInputElement>(null);
 
-  const [staging, setStaging] = useState<StagingGroup[]>([]);
+  const [carrierPreview, setCarrierPreview] = useState<PreviewRow[]>([]);
   const [carrierFileName, setCarrierFileName] = useState("");
-  const [savingStaging, setSavingStaging] = useState(false);
+  const [savingCarrierImport, setSavingCarrierImport] = useState(false);
+  const [importGates, setImportGates] = useState<GateRow[]>([]);
+  const [importSlotsByGateCode, setImportSlotsByGateCode] = useState<
+    Record<string, TimeSlot[]>
+  >({});
 
   const [manualGate, setManualGate] = useState("");
   const [manualTime, setManualTime] = useState("");
@@ -111,6 +81,14 @@ export default function KeHoachPage() {
     () => gates.filter((g) => isGateOpenOnDate(g, planDate)),
     [gates, planDate]
   );
+
+  const permittedGatesForImport = useMemo(
+    () => (importGates.length > 0 ? importGates : openGates),
+    [importGates, openGates]
+  );
+
+  const carrierImportReady = carrierPreview.length > 0 &&
+    carrierPreview.every((r) => r.errors.length === 0);
 
   const gateNameByCode = useMemo(() => {
     const map: Record<string, string> = {};
@@ -155,9 +133,30 @@ export default function KeHoachPage() {
     }
   }, []);
 
+  const loadImportContext = useCallback(async () => {
+    if (role !== "carrier") return;
+    try {
+      const res = await fetch(
+        `/api/plans/import-context?date=${planDate}`,
+        { cache: "no-store" }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lỗi tải ngữ cảnh import");
+      setImportGates(data.gates ?? []);
+      setImportSlotsByGateCode(data.slotsByGateCode ?? {});
+    } catch {
+      setImportGates([]);
+      setImportSlotsByGateCode({});
+    }
+  }, [planDate, role]);
+
   useEffect(() => {
     loadGates();
   }, [loadGates]);
+
+  useEffect(() => {
+    loadImportContext();
+  }, [loadImportContext]);
 
   useEffect(() => {
     if (editing) {
@@ -169,7 +168,7 @@ export default function KeHoachPage() {
 
   useEffect(() => {
     setPreview([]);
-    setStaging([]);
+    setCarrierPreview([]);
     setSelectedFileName("");
     setCarrierFileName("");
     setManualLines([{ orderCode: "", tonnage: "" }]);
@@ -307,80 +306,81 @@ export default function KeHoachPage() {
     }
     const headers = Object.keys(json[0]);
     const parsed = parseSheetRows(headers, json, planDate, {
-      requireGateTime: false,
+      requireGateTime: true,
     });
-    const errorRows = parsed.filter((r) => r.errors.length > 0);
+    const gatesForValidate =
+      importGates.length > 0 ? importGates : openGates;
+    const validated = validateCarrierImportRows(
+      parsed,
+      gatesForValidate,
+      importSlotsByGateCode
+    );
+    const errorRows = validated.filter((r) => r.errors.length > 0);
+    setCarrierPreview(validated);
+    setCarrierFileName(file.name);
     if (errorRows.length > 0) {
-      setError(
-        `${errorRows.length} dòng lỗi — sửa file hoặc kiểm tra cột bắt buộc (Đơn/Lệnh)`
+      setMessage(
+        `Đã đọc ${validated.length} dòng — ${errorRows.length} dòng lỗi, sửa file trước khi Lưu`
+      );
+    } else {
+      setMessage(
+        `Đã đọc ${validated.length} dòng — kiểm tra preview rồi bấm Lưu kế hoạch`
       );
     }
-    const groups = buildStagingGroups(parsed);
-    if (groups.length === 0) {
-      setError("Không có dòng hợp lệ để import");
-      return;
-    }
-    setStaging(groups);
-    setCarrierFileName(file.name);
-    setMessage(
-      `Đã đọc ${parsed.length} dòng — chọn Cổng và Giờ cho từng xe rồi Lưu`
-    );
   };
 
-  const cancelStaging = () => {
-    setStaging([]);
+  const cancelCarrierImport = () => {
+    setCarrierPreview([]);
     setCarrierFileName("");
     setMessage("");
     setError("");
     if (carrierFileInputRef.current) carrierFileInputRef.current.value = "";
   };
 
-  const updateStagingGroup = (
-    groupKey: string,
-    patch: Partial<Pick<StagingGroup, "gateId" | "expectedTime">>
-  ) => {
-    setStaging((prev) =>
-      prev.map((g) =>
-        g.groupKey === groupKey
-          ? {
-              ...g,
-              ...patch,
-              ...(patch.gateId !== undefined ? { expectedTime: "" } : {}),
-            }
-          : g
-      )
-    );
+  const copyGateCode = async (code: string) => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setMessage(`Đã copy mã cổng: ${code}`);
+    } catch {
+      setError("Không copy được vào clipboard");
+    }
   };
 
-  const saveStaging = async () => {
+  const copyAllGateCodes = async () => {
+    const codes = permittedGatesForImport.map((g) => g.code);
+    if (codes.length === 0) return;
+    try {
+      await navigator.clipboard.writeText(codes.join(", "));
+      setMessage(`Đã copy ${codes.length} mã cổng`);
+    } catch {
+      setError("Không copy được vào clipboard");
+    }
+  };
+
+  const saveCarrierImport = async () => {
     if (!canEdit) {
       setError("Không được sửa kế hoạch ngày đã qua");
       return;
     }
-    const incomplete = staging.filter((g) => !g.gateId || !g.expectedTime);
-    if (incomplete.length > 0) {
-      setError("Mỗi nhóm xe cần chọn Cổng và Giờ");
+    if (carrierPreview.length === 0) {
+      setError("Không có dòng để lưu");
       return;
     }
-    const orders = staging.flatMap((g) => {
-      const gate = gates.find((x) => x.id === g.gateId);
-      if (!gate) return [];
-      return g.rows.map((r) => ({
-        planDate: r.planDate,
-        gateCode: gate.code,
-        expectedTime: g.expectedTime,
-        orderCode: r.orderCode,
-        tonnage: r.tonnage,
-        vehiclePlate: g.plate,
-        driverName: g.driverName ?? r.driverName,
-        source: "import" as const,
-      }));
-    });
-    if (orders.length === 0) {
-      setError("Không có đơn để lưu");
+    if (carrierPreview.some((r) => r.errors.length > 0)) {
+      setError("Còn dòng lỗi — sửa file trước khi Lưu");
       return;
     }
-    setSavingStaging(true);
+    const orders = carrierPreview.map((r) => ({
+      planDate: r.planDate,
+      gateCode: r.gateCode,
+      expectedTime: r.expectedTime,
+      orderCode: r.orderCode,
+      tonnage: r.tonnage,
+      vehiclePlate: r.vehiclePlate,
+      driverName: r.driverName,
+      source: "import" as const,
+    }));
+    setSavingCarrierImport(true);
     setError("");
     try {
       const res = await fetch("/api/plans", {
@@ -391,12 +391,12 @@ export default function KeHoachPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lỗi lưu");
       setMessage(`Đã lưu ${data.orders?.length ?? 0} đơn kế hoạch`);
-      cancelStaging();
+      cancelCarrierImport();
       load();
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setSavingStaging(false);
+      setSavingCarrierImport(false);
     }
   };
 
@@ -704,9 +704,48 @@ export default function KeHoachPage() {
             </a>
           </div>
           <p className="mb-3 text-xs text-slate-500">
-            Cột bắt buộc: <b>Ngày, Đơn/Lệnh</b>. Tùy chọn: Số tấn, Số xe, Tài
-            xế. Sau import chọn <b>Cổng</b> và <b>Giờ</b> trên app.
+            Cột bắt buộc: <b>Ngày, Cổng, Giờ, Đơn/Lệnh</b>. Tùy chọn: Số tấn,
+            Số xe, Tài xế. File mẫu có sheet tham chiếu cổng và khung giờ.
           </p>
+
+          {permittedGatesForImport.length > 0 && (
+            <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-bold text-slate-800">
+                  Cổng được phép
+                </h3>
+                <button
+                  type="button"
+                  onClick={copyAllGateCodes}
+                  className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  Copy tất cả
+                </button>
+              </div>
+              <ul className="space-y-1 text-xs">
+                {permittedGatesForImport.map((g) => (
+                  <li
+                    key={g.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white px-2 py-1.5"
+                  >
+                    <span>
+                      <span className="font-mono font-semibold text-slate-800">
+                        {g.code}
+                      </span>
+                      <span className="text-slate-500"> — {g.name}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => copyGateCode(g.code)}
+                      className="rounded border border-slate-300 px-2 py-0.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+                    >
+                      Copy
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           <input
             ref={carrierFileInputRef}
@@ -734,43 +773,78 @@ export default function KeHoachPage() {
             )}
           </div>
 
-          {staging.length > 0 && (
+          {carrierPreview.length > 0 && (
             <>
-              <p className="mb-3 text-xs text-slate-600">
-                {staging.length} nhóm xe — mỗi xe chọn 1 cổng và 1 khung giờ
-              </p>
-              <div className="mb-3 space-y-3">
-                {staging.map((group) => (
-                  <StagingGroupCard
-                    key={group.groupKey}
-                    group={group}
-                    gates={openGates}
-                    planDate={planDate}
-                    inputCls={inputCls}
-                    onChange={(patch) =>
-                      updateStagingGroup(group.groupKey, patch)
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                <span>
+                  Preview: <b>{carrierPreview.length}</b> dòng ·{" "}
+                  <b className="text-green-700">
+                    {
+                      carrierPreview.filter((r) => r.errors.length === 0)
+                        .length
                     }
-                  />
-                ))}
+                  </b>{" "}
+                  hợp lệ ·{" "}
+                  <b className="text-red-600">
+                    {
+                      carrierPreview.filter((r) => r.errors.length > 0).length
+                    }
+                  </b>{" "}
+                  lỗi
+                </span>
+              </div>
+              <div className="mb-3 max-h-48 overflow-auto rounded border text-xs">
+                <table className="w-full">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="px-2 py-1">#</th>
+                      <th className="px-2 py-1">Cổng</th>
+                      <th className="px-2 py-1">Giờ</th>
+                      <th className="px-2 py-1">Đơn/Lệnh</th>
+                      <th className="px-2 py-1">Xe</th>
+                      <th className="px-2 py-1">Lỗi</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {carrierPreview.map((r) => (
+                      <tr
+                        key={r.rowNumber}
+                        className={
+                          r.errors.length ? "bg-red-50" : "bg-white"
+                        }
+                      >
+                        <td className="px-2 py-1">{r.rowNumber}</td>
+                        <td className="px-2 py-1">{r.gateCode}</td>
+                        <td className="px-2 py-1">{r.expectedTime}</td>
+                        <td className="px-2 py-1">{r.orderCode}</td>
+                        <td className="px-2 py-1">{r.vehiclePlate ?? "-"}</td>
+                        <td className="px-2 py-1 text-red-600">
+                          {r.errors.join("; ")}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <Button
                   type="button"
-                  onClick={saveStaging}
+                  onClick={saveCarrierImport}
                   variant="success"
                   size="lg"
-                  loading={savingStaging}
+                  loading={savingCarrierImport}
                   loadingText="Đang lưu..."
+                  disabled={!carrierImportReady}
                   className="flex-1 shadow-md"
                 >
                   Lưu kế hoạch
                 </Button>
                 <Button
                   type="button"
-                  onClick={cancelStaging}
+                  onClick={cancelCarrierImport}
                   variant="secondary"
                   size="lg"
-                  disabled={savingStaging}
+                  disabled={savingCarrierImport}
                   className="sm:flex-none"
                 >
                   Hủy
@@ -1148,109 +1222,6 @@ export default function KeHoachPage() {
         </Modal>
       )}
     </>
-  );
-}
-
-function StagingGroupCard({
-  group,
-  gates,
-  planDate,
-  inputCls,
-  onChange,
-}: {
-  group: StagingGroup;
-  gates: GateRow[];
-  planDate: string;
-  inputCls: string;
-  onChange: (patch: Partial<Pick<StagingGroup, "gateId" | "expectedTime">>) => void;
-}) {
-  const [slots, setSlots] = useState<TimeSlot[]>([]);
-  const stagingSlotSeq = useRef(0);
-
-  useEffect(() => {
-    if (!group.gateId) {
-      setSlots([]);
-      return;
-    }
-    const seq = ++stagingSlotSeq.current;
-    const params = new URLSearchParams({
-      date: planDate,
-      gateId: String(group.gateId),
-    });
-    if (group.plate) params.set("excludePlate", group.plate);
-    fetch(`/api/plans/slots?${params}`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (seq !== stagingSlotSeq.current) return;
-        setSlots(d.slots ?? []);
-      })
-      .catch(() => {
-        if (seq === stagingSlotSeq.current) setSlots([]);
-      });
-  }, [group.gateId, group.plate, planDate]);
-
-  return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <span className="font-bold text-slate-800">
-          {group.plate ?? `Dòng #${group.rows[0]?.rowNumber}`}
-        </span>
-        {group.driverName && (
-          <span className="text-xs text-slate-500">{group.driverName}</span>
-        )}
-      </div>
-      <ul className="mb-3 space-y-0.5 text-xs text-slate-600">
-        {group.rows.map((r) => (
-          <li key={r.rowNumber}>
-            <span className="font-mono">{r.orderCode}</span>
-            {r.tonnage != null && (
-              <span className="text-slate-400"> · {r.tonnage} tấn</span>
-            )}
-          </li>
-        ))}
-      </ul>
-      <div className="grid grid-cols-2 gap-2">
-        <Field label="Cổng">
-          <select
-            value={group.gateId}
-            onChange={(e) => {
-              const id = e.target.value ? Number(e.target.value) : "";
-              onChange({ gateId: id });
-            }}
-            className={inputCls}
-          >
-            <option value="">-- Chọn cổng --</option>
-            {gates.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.code} — {g.name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Giờ">
-          <select
-            value={group.expectedTime}
-            onChange={(e) => onChange({ expectedTime: e.target.value })}
-            className={inputCls}
-            disabled={!group.gateId}
-          >
-            <option value="">
-              {!group.gateId ? "-- Chọn cổng trước --" : "-- Chọn giờ --"}
-            </option>
-            {slots.map((s) => (
-              <option key={s.minutes} value={s.label}>
-                {s.label}
-              </option>
-            ))}
-          </select>
-          {group.gateId && slots.length === 0 && (
-            <p className="mt-1 text-xs text-amber-700">
-              Không có khung giờ khả dụng (cổng đóng hoặc đã hết slot)
-            </p>
-          )}
-        </Field>
-      </div>
-    </div>
   );
 }
 

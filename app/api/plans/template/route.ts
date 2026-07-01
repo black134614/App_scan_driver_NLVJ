@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionFromRequest } from "@/lib/api-auth";
+import { getCarrierImportContext } from "@/lib/plan-import-context";
 import { todayDateString } from "@/lib/plan-parse";
 import {
   buildCarrierImportTemplate,
@@ -16,7 +17,12 @@ export async function GET(req: NextRequest) {
 
   const isCarrier = session.role === "carrier";
   const buffer = isCarrier
-    ? buildCarrierImportTemplate(date)
+    ? buildCarrierImportTemplate(
+        date,
+        session.carrierId
+          ? await getCarrierImportContext(session.carrierId, date)
+          : undefined
+      )
     : buildPlanImportTemplate(date);
   const filename = isCarrier
     ? `mau-ke-hoach-nvt-${date}.xlsx`
